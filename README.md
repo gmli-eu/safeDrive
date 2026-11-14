@@ -68,7 +68,7 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 
 - Turn the knob to move through the menu and press it to select.
 - **I'm ok** opens: Send to mom, Send to dad, Send to both, Go back.
-- Picking a recipient sends "I'm ok and I've arrived." plus the phone's location right away, using the last location from up to 30 minutes ago. If it's over 1 minute old, the hub also asks the phone for a new one and sends a second pin if the phone answers from more than 100 m away to that bot (`mom` and `dad` in `jetson-hub/secrets.json`). The screen then shows **Sent** (green), **Sent** without location (orange, no recent GPS fix) or **Failed** with the reason (red), and goes back to the menu. You can press the knob to close it sooner.
+- Picking a recipient sends "I've arrived and everything is ok." plus the phone's location right away, using the last location from up to 30 minutes ago. If it's over 1 minute old, the hub also asks the phone for a new one and sends a second pin if the phone answers from more than 100 m away to that bot (`mom` and `dad` in `jetson-hub/secrets.json`). The screen then shows **Sent** (green), **Sent** without location (orange, no recent GPS fix) or **Failed** with the reason (red), and goes back to the menu. You can press the knob to close it sooner.
 - **Go back** returns to the main menu.
 
 ## Accident detection (orientation sensor on port 9)

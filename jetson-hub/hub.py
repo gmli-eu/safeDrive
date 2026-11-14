@@ -1,7 +1,7 @@
 # SafeDrive hub (runs on the Jetson). Scenarios:
 # - hold the Atech port-6 button for 2 s -> Telegram message + live location that follows
 #   the phone (OwnTracks) for LIVE_PERIOD s.
-# - "I'm ok" in the screen menu -> "I'm ok and I've arrived." + location to mom, dad or both.
+# - "I'm ok" in the screen menu -> "I've arrived and everything is ok." + location to mom, dad or both.
 # - crash or flip detected by the board's orientation sensor, and the driver doesn't answer
 #   "ARE YOU OK?" within 10 s -> accident alert + live location to everyone.
 # - voice.py asks for a spoken message to be sent (car/voice/send) -> Telegram text to mom, dad or both.
@@ -274,7 +274,7 @@ def send_checkin(to):
         if not targets: raise RuntimeError(f"No chat linked for {to}: open the bot and tap Start")
         f = recent_fix()
         asked = (not f or fix_age(f) > FRESH_FIX_AGE) and ask_phone()
-        text = "I'm ok and I've arrived."
+        text = "I've arrived and everything is ok."
         if f: text += f"\nhttps://maps.google.com/?q={f['lat']:.6f},{f['lon']:.6f}"
         elif asked: text += "\n📍 Getting the location from the phone..."
         else: text += "\n⚠️ No recent location from the phone (is its live location shared with a SafeDrive bot?)."

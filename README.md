@@ -35,7 +35,7 @@ python3 tools/deploy.py atech-flasher   # ~1 min: build, flash, wait for the boa
 ## SOS button (port 6)
 
 - Hold 2 s: two amber flashes, and the alert goes out to every linked chat at once, with a live location. If the last location is over 1 minute old, the hub asks the phone for a new one and the live location moves there when it arrives. With no location at all, the live location follows as soon as the phone answers (up to 60 s).
-- Red for 3 s: the hub reported a problem (no chats linked, every send failed, or no recent GPS fix, in which case the alert went out without a location).
+- Otherwise the light stays off, so the button stays discreet. It never turns red, even when the hub reports a problem (no chats linked, every send failed, or no recent GPS fix). The problem only shows up in the board's log.
 - The white light while it's pressed is built into the V2.0 button, and firmware can't turn it off.
 
 The port 3 button toggles the light grid.

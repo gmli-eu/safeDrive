@@ -24,7 +24,6 @@ code:
     PubSubClient mqtt(netClient);
     bool lightOn = false;
     String scanReport;
-    unsigned long sosColorUntil = 0;
     unsigned long sosFlashAt = 0;   // quick amber double flash when the long press fires
 
     void logLine(const char* raw) {
@@ -142,13 +141,9 @@ code:
         if (p.indexOf("toggle") >= 0) setLight(!lightOn);
         else setLight(p.indexOf("true") >= 0);
       } else if (t == "car/atech/notify") {
-        // "sent": no light (the amber flash at fire time is the only signal).
-        // "error": red for 3 s, so a failed alert is noticed.
-        if (p.indexOf("sent") < 0) {
-          sosbtn.setColor(255, 0, 0);
-          sosColorUntil = millis() + 3000;
-          sosFlashAt = 0;
-        }
+        // No light either way: the button must stay discreet (no red), so the amber
+        // flash at fire time is the only signal. The hub's reply is just logged.
+        logLine(p.indexOf("sent") >= 0 ? "sos: hub sent the alert" : "sos: hub reported a problem");
       } else if (t == "car/atech/checkin/result") {
         onCheckinResult(p);
       }
@@ -267,7 +262,7 @@ code:
     }
 
     // Scenario 2: hold the port 6 button for 2 s -> long_press event to the hub.
-    // Light: two amber flashes when it fires, red for 3 s if the hub reports an error.
+    // Light: two amber flashes when it fires, otherwise off (never red: it must stay discreet).
     // (The white light while pressed is built into the V2.0 button; firmware can't turn it off.)
     static unsigned long sosDownAt = 0;
     static bool sosFired = false;
@@ -282,10 +277,11 @@ code:
         sosFlashAt = millis();
         logLine("sos: long press");
       }
-    } else if (!sosDown && !sosFired && sosColorUntil == 0) {
-      sosbtn.off();
     }
-    if (sosColorUntil && millis() > sosColorUntil) { sosColorUntil = 0; sosbtn.off(); }
+    // Keep the light off outside the amber flash. Re-sent every second, because one
+    // garbled "off" (e.g. over long jumper wires) would otherwise leave it lit.
+    static unsigned long sosOffAt = 0;
+    if (!sosFlashAt && millis() - sosOffAt > 1000) { sosOffAt = millis(); sosbtn.off(); }
 
     // Fired: two quick amber flashes (120 ms on/off) so the driver knows they can let go.
     if (sosFlashAt) {

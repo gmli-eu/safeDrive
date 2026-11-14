@@ -9,7 +9,7 @@ def enc_len(n):
 def s(x): x=x.encode(); return struct.pack("!H",len(x))+x
 def pkt(t,body): return bytes([t])+enc_len(len(body))+body
 sock=socket.create_connection(("172.20.10.2",1883),5)
-sock.sendall(pkt(0x10, s("MQTT")+b"\x04\x02"+struct.pack("!H",30)+s("claude-probe")))
+sock.sendall(pkt(0x10, s("MQTT")+b"\x04\x02"+struct.pack("!H",0)+s("claude-probe")))
 topics=sys.argv[2:] or ["car/#","$SYS/broker/clients/connected","$SYS/broker/uptime"]
 body=struct.pack("!H",1)+b"".join(s(t)+b"\x00" for t in topics)
 sock.sendall(pkt(0x82,body))

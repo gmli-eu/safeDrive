@@ -4,16 +4,19 @@ libraries:
   - knolleary/PubSubClient@^2.8
 modules:
   - {id: st7735_tft,     instance: screen,   ports: [1, 2]}     # check-in menu
-  - {id: button,         instance: lightbtn, port: 3}           # tap: toggle the light grid
+  - {id: microphone,     instance: mic,      ports: [3, 4]}     # voice: streams to the hub while listening
+  - {id: button,         instance: voicebtn, port: 5}           # press: talk to the car, green while listening
   - {id: button,         instance: sosbtn,   port: 6}           # hold 2 s: Telegram live location
   - {id: neopixel,       instance: grid,     port: 7}
   - {id: icm40608,       instance: imu,      port: 9}           # orientation sensor: crash / flip detection
+  - {id: speaker,        instance: spk,      ports: [10, 11]}   # voice: the hub's spoken replies
   - {id: rotary_encoder, instance: knob,     ports: [13, 14]}   # turn: move in the menu, press: select
 code:
   globals: |
     #include <WiFi.h>
     #include <PubSubClient.h>
     #include <lwip/sockets.h>
+    #include <freertos/stream_buffer.h>
 
     static const char* WIFI_SSID = "@WIFI_SSID@";   // filled in from secrets.json by make_compose.py
     static const char* WIFI_PASS = "@WIFI_PASS@";
@@ -63,13 +66,16 @@ code:
     // ---------- Accident detection: orientation sensor (IMU) on port 9 ----------
     // Crash: total acceleration over CRASH_G (the sensor tops out at 2 g per axis, about
     // 3.4 g in total). Flip: "down" turns more than FLIP_DEG away from where it was at
-    // power-on and stays there for FLIP_HOLD_MS while the board is still. Either opens a
+    // power-on and stays there for FLIP_HOLD_MS while the board is still (not while the
+    // voice button is in use, or for FLIP_VOICE_GRACE_MS after: picking the board up to
+    // talk into it looks just like a roll). Either opens a
     // 10 s "ARE YOU OK?" countdown. A knob press cancels it; otherwise car/atech/accident
     // {"kind":"crash"|"flip"} goes to the hub, which alerts every chat with the location.
     enum AccidentKind { ACC_NONE, ACC_CRASH, ACC_FLIP };
     static const float CRASH_G = 2.5f;
-    static const float FLIP_DEG = 60.0f;
-    static const unsigned long FLIP_HOLD_MS = 2000;
+    static const float FLIP_DEG = 75.0f;                  // a car on its side is ~90
+    static const unsigned long FLIP_HOLD_MS = 3000;
+    static const unsigned long FLIP_VOICE_GRACE_MS = 10000;
     static const unsigned long ACCIDENT_COUNTDOWN_MS = 10000;
     static const unsigned long ACCIDENT_REPLY_TIMEOUT_MS = 90000;   // hub may wait 60 s for a location
 
@@ -82,6 +88,7 @@ code:
     unsigned long crashQuietUntil = 0;       // ignore jolts until then (after a cancel)
     unsigned long flipSince = 0;             // when the board tipped over; 0 = upright
     bool flipArmed = true;                   // one flip alert per flip: re-armed once upright again
+    unsigned long flipPauseUntil = 0;        // voice in use: no flip until then (set by the voice code)
 
     const char* accidentName(AccidentKind k) { return k == ACC_FLIP ? "flip" : "crash"; }
     int accidentSecondsLeft() {
@@ -114,7 +121,8 @@ code:
         float c = (ax * downX + ay * downY + az * downZ) / m;
         tilt = acosf(c > 1 ? 1 : c < -1 ? -1 : c) * 57.2958f;
       }
-      if (still && tilt > FLIP_DEG) { if (!flipSince) flipSince = millis(); }
+      bool flipPaused = (long)(millis() - flipPauseUntil) < 0;
+      if (still && tilt > FLIP_DEG && !flipPaused) { if (!flipSince) flipSince = millis(); }
       else flipSince = 0;
       if (still && tilt < FLIP_DEG - 20) flipArmed = true;
       if (menu == MENU_ACCIDENT || accidentPending || accidentSentAt) return ACC_NONE;   // one at a time
@@ -196,7 +204,113 @@ code:
       }
     }
 
+    // ---------- Voice: button on port 5, mic on ports 3-4, speaker on ports 10-11 ----------
+    // Hold the button and talk, or tap it once to start and again to stop. It's green while
+    // the mic streams 16 kHz audio to the hub (UDP port 1885, 32 ms per packet); it stops on
+    // release (after a hold), on the next tap, or after 20 s. The hub's spoken
+    // reply comes back as raw 16 kHz PCM (car/atech/voice/pcm) and plays from a buffer in its
+    // own task, so the loop never waits for the speaker. car/atech/voice/status puts text on the screen.
+    static const unsigned long VOICE_MAX_MS = 20000;
+    static const unsigned long VOICE_HOLD_MS = 600;   // held longer than this: push-to-talk, stop on release
+    static const unsigned long VOICE_CHIME_MS = 180;   // the start chime isn't sent to the hub
+    // Mic audio goes over UDP, not MQTT: on a busy hotspot a TCP write blocks, and it froze this
+    // loop (and the SOS button) for up to 25 s. A UDP packet that doesn't fit is dropped instead.
+    // Packet: session id (uint32 LE), sequence number (uint32 LE), 1024 bytes of PCM.
+    static const size_t MIC_CHUNK_BYTES = 1024;     // fits one Wi-Fi frame: no IP fragments
+    static const uint16_t MIC_UDP_PORT = 1885;
+    int micFd = -1;
+    uint32_t voiceSid = 0, micSeq = 0;
+    StreamBufferHandle_t micBuf = NULL;    // mic task -> loop (0.5 s)
+    StreamBufferHandle_t playBuf = NULL;   // MQTT -> playback task (1.5 s; the hub stays 0.6 s ahead)
+    volatile bool micOn = false;
+    volatile bool playFlush = false;
+    bool listening = false;
+    bool voiceHeld = false;                // the press that started listening is still down
+    unsigned long voicePressAt = 0;
+    unsigned long listenAt = 0;
+
+    void onMic(const int16_t* samples, int count, void*) {   // capture task, core 0: copy and return
+      size_t n = count * 2;
+      if (micOn && micBuf && xStreamBufferSpacesAvailable(micBuf) >= n) xStreamBufferSend(micBuf, samples, n, 0);
+    }
+
+    void playTask(void*) {
+      static int16_t buf[256];
+      for (;;) {
+        if (playFlush) {
+          while (xStreamBufferReceive(playBuf, buf, sizeof buf, 0) > 0) {}
+          playFlush = false;
+        }
+        size_t n = xStreamBufferReceive(playBuf, buf, sizeof buf, pdMS_TO_TICKS(20));
+        if (n >= 2) spk.writeSamples(buf, n / 2);
+      }
+    }
+
+    // A check-in or accident owns the screen until it's resolved.
+    bool screenBusy() { return menu == MENU_ACCIDENT || accidentPending || accidentSentAt || checkinSentAt; }
+
+    void voiceStart() {
+      if (!micBuf || !playBuf) { logLine("voice: off, no memory for the audio buffers"); return; }
+      if (!mqtt.connected()) {
+        if (!screenBusy()) showStatus("Offline", "Not connected to the hub. Try again in a moment.", ATECH_ALERT, 4000);
+        return;
+      }
+      playFlush = true;                      // a new question interrupts the last answer
+      uint8_t junk[256];
+      while (xStreamBufferReceive(micBuf, junk, sizeof junk, 0) > 0) {}
+      if (micFd < 0) {
+        micFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (micFd >= 0) fcntl(micFd, F_SETFL, fcntl(micFd, F_GETFL, 0) | O_NONBLOCK);
+      }
+      if (micFd < 0) { logLine("voice: no UDP socket"); return; }
+      voiceSid = esp_random(); micSeq = 0;
+      char start[48]; snprintf(start, sizeof start, "{\"sr\":16000,\"sid\":%lu}", (unsigned long)voiceSid);
+      mqtt.publish("car/atech/voice/start", start);
+      listening = true; listenAt = millis();
+      voicebtn.setColor(0, 255, 0);
+      spk.playNote(NOTE_C5, 70); spk.playNote(NOTE_G5, 90);
+      if (!screenBusy()) showStatus("Listening...", "Hey car, send a message to mom, ... / ask Google ... Release, or tap again, to finish.", ATECH_OK, 0);
+      logLine("voice: listening");
+    }
+
+    void voiceStop(const char* reason) {
+      if (!listening) return;
+      listening = false; micOn = false;
+      voicebtn.off();
+      char j[48]; snprintf(j, sizeof j, "{\"reason\":\"%s\"}", reason);
+      publishJson("car/atech/voice/end", j);
+      bool accident = !strcmp(reason, "accident"), offline = !strcmp(reason, "offline");
+      if (!accident) { spk.playNote(NOTE_G5, 60); spk.playNote(NOTE_C5, 90); }
+      if (!screenBusy()) {
+        if (offline) showStatus("Offline", "Lost the hub while listening. Try again.", ATECH_ALERT, 4000);
+        else showStatus("Thinking...", "", ATECH_FG, 30000);
+      }
+      char b[48]; snprintf(b, sizeof b, "voice: stopped listening (%s)", reason); logLine(b);
+    }
+
+    String jsonStr(const String& p, const char* key) {
+      String k = String("\"") + key + "\": \"";   // Python's json.dumps puts a space after the colon
+      int a = p.indexOf(k);
+      if (a < 0) { k = String("\"") + key + "\":\""; a = p.indexOf(k); }
+      if (a < 0) return "";
+      a += k.length();
+      int b = p.indexOf('"', a);
+      return b > a ? p.substring(a, b) : "";
+    }
+
+    // Hub: {"title": "...", "body": "...", "color": "ok|warn|alert|fg", "ms": 8000}
+    void onVoiceStatus(const String& p) {
+      if (screenBusy() || listening) return;
+      String c = jsonStr(p, "color");
+      uint16_t color = c == "ok" ? ATECH_OK : c == "warn" ? ATECH_WARN : c == "alert" ? ATECH_ALERT : ATECH_FG;
+      int a = p.indexOf("\"ms\":");
+      long ms = a >= 0 ? p.substring(a + 5).toInt() : 0;
+      showStatus(jsonStr(p, "title").c_str(), jsonStr(p, "body"), color, ms > 0 ? ms : 8000);
+    }
+
     void startAccident(AccidentKind k) {
+      if (listening) voiceStop("accident");  // the countdown needs the driver's attention
+      playFlush = true;                      // and silence
       accidentKind = k;
       accidentAt = millis();
       checkinSentAt = 0;                     // a late check-in reply must not replace this screen
@@ -233,7 +347,13 @@ code:
     // Commands from the hub: car/atech/light  {"on":true|false} or "toggle"
     //                        car/atech/notify {"status":"sent"|"error"}
     //                        car/atech/checkin/result (see onCheckinResult)
+    //                        car/atech/voice/pcm, /stop, /status (see the voice section)
     void onMqtt(char* topic, byte* payload, unsigned int len) {
+      if (!strcmp(topic, "car/atech/voice/pcm")) {   // binary audio: straight into the speaker buffer
+        if (playBuf && !(len & 1) && !listening && menu != MENU_ACCIDENT && xStreamBufferSpacesAvailable(playBuf) >= len)
+          xStreamBufferSend(playBuf, payload, len, 0);
+        return;
+      }
       String t(topic), p;
       for (unsigned int i = 0; i < len; i++) p += (char)payload[i];
       if (t == "car/atech/light") {
@@ -247,6 +367,10 @@ code:
         onCheckinResult(p);
       } else if (t == "car/atech/accident/result") {
         onAccidentResult(p);
+      } else if (t == "car/atech/voice/stop") {
+        voiceStop("hub");                    // the hub heard the driver finish
+      } else if (t == "car/atech/voice/status") {
+        onVoiceStatus(p);
       }
     }
 
@@ -313,6 +437,9 @@ code:
               mqtt.subscribe("car/atech/notify");
               mqtt.subscribe("car/atech/checkin/result");
               mqtt.subscribe("car/atech/accident/result");
+              mqtt.subscribe("car/atech/voice/pcm");
+              mqtt.subscribe("car/atech/voice/stop");
+              mqtt.subscribe("car/atech/voice/status");
               logLine("mqtt: connected");
             } else {
               logLine("mqtt: connect failed");
@@ -343,6 +470,15 @@ code:
     mqtt.setServer(MQTT_HOST, MQTT_PORT);
     mqtt.setCallback(onMqtt);
     mqtt.setSocketTimeout(2);
+    mqtt.setBufferSize(4096);          // voice audio: 2-3 KB per message each way
+    micBuf = xStreamBufferCreate(16384, 1);
+    playBuf = xStreamBufferCreate(49152, 2);
+    if (micBuf && playBuf) {
+      mic.onAudio(onMic, nullptr);
+      xTaskCreatePinnedToCore(playTask, "VoicePlay", 4096, nullptr, 2, nullptr, 0);
+    } else logLine("voice: off, no memory for the audio buffers");
+    spk.setVolume(0.6f);               // spoken replies over road noise; 1.0 clips
+    voicebtn.off();
     grid.clear(); grid.show();
     knob.setAcceleration(false);       // one detent = one menu row
     knob.setRingColor(10, 132, 255);
@@ -358,10 +494,36 @@ code:
 
     keepConnected();
 
-    // Scenario 1: tap the port 3 button -> toggle the light (locally, instant)
-    if (lightbtn.wasPressed()) {
-      setLight(!lightOn);
-      publishJson("car/atech/button", "{\"id\":\"light\",\"port\":3,\"action\":\"press\"}");
+    // Scenario 1: the port 5 button and talk ("hey car, ..."). Green while listening.
+    // Hold it while talking (stops on release), or tap to start and tap again to stop.
+    if (voicebtn.wasPressed()) {
+      if (listening) voiceStop("button");
+      else { voiceStart(); voiceHeld = listening; voicePressAt = millis(); }
+    }
+    if (voiceHeld && !voicebtn.isPressed()) {
+      voiceHeld = false;
+      if (listening && millis() - voicePressAt >= VOICE_HOLD_MS) voiceStop("released");   // a short tap keeps listening
+    }
+    if (listening) {
+      flipPauseUntil = millis() + FLIP_VOICE_GRACE_MS;   // holding the board to talk isn't a roll
+      if (!micOn && millis() - listenAt >= VOICE_CHIME_MS) micOn = true;
+      static uint8_t pkt[8 + MIC_CHUNK_BYTES];
+      static sockaddr_in hubAddr = {};
+      hubAddr.sin_family = AF_INET; hubAddr.sin_port = htons(MIC_UDP_PORT); hubAddr.sin_addr.s_addr = inet_addr(MQTT_HOST);
+      while (xStreamBufferBytesAvailable(micBuf) >= MIC_CHUNK_BYTES) {
+        memcpy(pkt, &voiceSid, 4); memcpy(pkt + 4, &micSeq, 4);   // ESP32 is little-endian
+        xStreamBufferReceive(micBuf, pkt + 8, MIC_CHUNK_BYTES, 0);
+        sendto(micFd, pkt, sizeof pkt, 0, (sockaddr*)&hubAddr, sizeof hubAddr);   // non-blocking: a full buffer drops it
+        micSeq++;
+      }
+      if (!mqtt.connected()) voiceStop("offline");
+      else if (millis() - listenAt > VOICE_MAX_MS) voiceStop("timeout");
+    }
+    // Re-send the button's light every second: one garbled command over long wires would stick.
+    static unsigned long voiceLightAt = 0;
+    if (millis() - voiceLightAt > 1000) {
+      voiceLightAt = millis();
+      if (listening) voicebtn.setColor(0, 255, 0); else voicebtn.off();
     }
 
     // Scenario 2: hold the port 6 button for 2 s -> long_press event to the hub.

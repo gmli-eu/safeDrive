@@ -1,6 +1,8 @@
 # SafeDrive voice assistant (runs on the Jetson, next to hub.py).
 # Press the port-5 button and talk: "hey car, send a message to mom, I'm running 5 min late",
 # "hey car, ask Google what's the weather today", "hey car, turn on the light".
+# The back seat has its own board (button on port 9, the passenger intercom): the same assistant,
+# but questions only. It can never message the family, switch the light or send directions.
 #   board mic --UDP port 1885--> speech-to-text (faster-whisper, local)
 #   --> what to do (local LLM through Ollama; a few fixed phrases also work without it)
 #   --> Telegram message (through hub.py) / Gemini (only for "ask Google") / light
@@ -69,6 +71,7 @@ def log(*a): print(time.strftime("%H:%M:%S"), "[voice]", *a, flush=True)
 
 # ---------- models ----------
 whisper = piper = vad = None
+whisper_lock = threading.Lock()
 llm_ready = False
 
 def load_models():
@@ -161,47 +164,55 @@ def ollama_get(path):
     with urllib.request.urlopen(OLLAMA_URL + path, timeout=10) as r: return json.load(r)
 
 # ---------- MQTT ----------
+# Two boards, each with its own button, mic and speaker, and its own topics:
+#   driver:    car/atech/voice/{start,end,pcm,stop,status}   (port 5; the screen shows /status)
+#   passenger: car/passenger/voice/{start,end,pcm,stop}      (port 9 on the back-seat board, no screen)
+# Each board has its own current press, so the back seat and the driver can ask at the same time.
+BOARD_TOPIC = {"driver": "car/atech/voice", "passenger": "car/passenger/voice"}
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="car-voice")
 lock = threading.Lock()
-session = None             # the current press: dict(id, audio bytearray, listening, started)
+sessions = {}              # board -> its current press: dict(id, board, sid, chunks, listening, started)
 send_results = {}          # message id -> hub's reply
 send_done = threading.Condition(lock)
+here = threading.local()   # .board: the board the request being handled came from
 
 def status(title, body="", color="fg", ms=8000):
-    # Shown on the board's screen. ASCII only, no quotes (the board's parser is simple).
+    # Shown on the driver board's screen. ASCII only, no quotes (the board's parser is simple).
+    # The passenger board has no screen, and its requests never show on the driver's.
+    if getattr(here, "board", "driver") != "driver": return
     clean = lambda s: re.sub(r'[^\x20-\x7e]', '', s.replace('"', "'").replace("\\", "/"))
     client.publish("car/atech/voice/status", json.dumps({"title": clean(title)[:13], "body": clean(body)[:200], "color": color, "ms": ms}))
 
 def on_connect(c, userdata, flags, rc, props=None):
     log("MQTT connected", rc)
-    c.subscribe([("car/atech/voice/#", 0), ("car/voice/send/result", 1)])
+    c.subscribe([("car/atech/voice/#", 0), ("car/passenger/voice/#", 0), ("car/voice/send/result", 1)])
 
 def on_message(c, userdata, m):
-    global session
-    if m.topic == "car/atech/voice/pcm": return            # our own output
+    board = next((b for b, t in BOARD_TOPIC.items() if m.topic.startswith(t + "/")), None)
+    if board and m.topic.endswith("/pcm"): return          # our own output
     try: data = json.loads(m.payload.decode() or "null")
     except Exception: data = None
-    if m.topic == "car/atech/voice/start":
+    if board and m.topic.endswith("/start"):
         sid = (data or {}).get("sid")
         with lock:
-            session = {"id": uuid.uuid4().hex[:8], "sid": sid, "chunks": early.pop(sid, {}), "listening": True, "started": time.time()}
-            early.clear()
-            s = session
-        log("listening", s["id"])
+            s = sessions[board] = {"id": uuid.uuid4().hex[:8], "board": board, "sid": sid, "chunks": early.pop(sid, {}),
+                                   "listening": True, "started": time.time()}
+        log(f"listening ({board})", s["id"])
         threading.Thread(target=listen, args=(s,), daemon=True).start()
-    elif m.topic == "car/atech/voice/end":
+    elif board and m.topic.endswith("/end"):
         reason = (data or {}).get("reason")
-        log("board stopped listening:", reason)
+        log(f"{board} board stopped listening:", reason)
         with lock:
-            if reason == "accident": session = None   # cut off mid-sentence: never act on half a request
-            elif session: session["listening"] = False
+            s = sessions.get(board)
+            if reason == "accident": sessions.pop(board, None)   # cut off mid-sentence: never act on half a request
+            elif s: s["listening"] = False
     elif m.topic == "car/voice/send/result" and isinstance(data, dict):
         with lock:
             send_results[data.get("id")] = data
             send_done.notify_all()
 
 def current(s):
-    with lock: return session is s
+    with lock: return sessions.get(s["board"]) is s
 
 # ---------- mic audio: UDP from the board ----------
 # Each packet: session id (uint32 LE), sequence number (uint32 LE), then 16 kHz int16 PCM.
@@ -217,9 +228,11 @@ def udp_loop():
         if len(pkt) < 10: continue
         sid, seq = int.from_bytes(pkt[0:4], "little"), int.from_bytes(pkt[4:8], "little")
         with lock:
-            if session and session["sid"] == sid:
-                if seq < 2000: session["chunks"][seq] = pkt[8:]      # 64 s cap; stragglers after "end" still count
-            elif len(early) < 4 and seq < 50:
+            s = next((x for x in sessions.values() if x["sid"] == sid), None)
+            if s:
+                if seq < 2000: s["chunks"][seq] = pkt[8:]            # 64 s cap; stragglers after "end" still count
+            elif seq < 50:
+                if sid not in early and len(early) >= 8: early.pop(next(iter(early)))   # forget the oldest
                 early.setdefault(sid, {})[seq] = pkt[8:]
 
 def session_audio(s):
@@ -238,16 +251,17 @@ def to_float(pcm):
 def listen(s):
     # The driver decides when they're done: release after a hold, or a second tap (the board
     # sends "end"). The board also gives up after 20 s; this is only a backstop if "end" is lost.
+    here.board = s["board"]
     while True:
         time.sleep(0.1)
+        if not current(s): return
         with lock:
-            if session is not s: return
             if not s["listening"]: break
         if time.time() - s["started"] > 25:
-            client.publish("car/atech/voice/stop", "{}"); break
+            client.publish(BOARD_TOPIC[s["board"]] + "/stop", "{}"); break
     time.sleep(0.2)                                          # the last packets may still be on their way
     with lock:
-        if session is not s: return
+        if sessions.get(s["board"]) is not s: return
         s["listening"] = False
         pcm = session_audio(s)
     log(f"got {len(pcm) / 2 / SR:.1f}s of audio")
@@ -273,11 +287,13 @@ def transcribe(pcm):
         log("no speech in the recording")
         return ""
     t = time.time()
+    # One transcription at a time: the driver and the back seat may both be talking.
     # Keep the prompt to the wake words: Whisper sometimes repeats its prompt on unclear audio.
     # The contact names as hints, so a short "Dad" isn't heard as "that" or "dead".
     hint = "Hey car." + "".join(f" {c.capitalize()}." for c in CONTACTS)
-    segs, _ = whisper.transcribe(audio, language="en", beam_size=3, vad_filter=False, initial_prompt=hint)
-    text = " ".join(x.text.strip() for x in segs).strip()
+    with whisper_lock:
+        segs, _ = whisper.transcribe(audio, language="en", beam_size=3, vad_filter=False, initial_prompt=hint)
+        text = " ".join(x.text.strip() for x in segs).strip()
     log(f"heard in {time.time() - t:.1f}s: {text!r}")
     return fix_names(WAKE.sub("", text).strip())
 
@@ -361,6 +377,7 @@ def handle(s, pcm):
     if not text:
         return say(s, "Sorry, I didn't catch that.", "Sorry", "Didn't catch that. Press the button and try again.", "warn")
     status("Heard", text, "fg", 30000)
+    if s["board"] == "passenger": return handle_passenger(s, text)
     if answer_who(s, text): return
     intent = understand(text)
     if not current(s): return
@@ -385,6 +402,28 @@ def handle(s, pcm):
         say(s, reply, "Answer", reply, "fg")
     else:
         say(s, "Sorry, I didn't understand. You can say: send a message to mom, or ask Google.", "Sorry", "Didn't understand: " + text, "warn")
+
+# ---------- the back seat: questions only ----------
+# The passenger board can ask anything (the local model, or Google when they say "Google"), but it
+# can never message the driver's family, switch the light or put directions on the driver's phone:
+# those are refused here whatever the model decided, and Gemini gets none of those functions.
+PASSENGER_ONLY_ASK = "From the back seat I can only answer questions. Ask the driver for that."
+
+def handle_passenger(s, text):
+    log("back seat asked:", text)
+    intent = understand(text)
+    if not current(s): return
+    act = intent.get("action")
+    if act in ("send_message", "light", "directions"):
+        log(f"back seat: {act} refused")
+        return say(s, PASSENGER_ONLY_ASK, "", "", "warn")
+    if act == "ask_google":
+        if NAMES_GOOGLE.search(text): return ask_google(s, text)
+        return say(s, "I can't check that offline. Say 'ask Google' to look it up.", "", "", "warn")
+    if act == "answer":
+        reply = (intent.get("reply") or "").strip() or local_answer(text)
+        return say(s, reply, "", "", "fg")
+    say(s, "Sorry, I didn't understand. Press the button and ask your question again.", "", "", "warn")
 
 # Whisper's usual mishearings of the contact names ("send dad" -> "send dead").
 NAME_FIXES = [(re.compile(r"\b(send|sent|tell|text|message|to)\s+(?:a\s+message\s+to\s+)?dead\b", re.I), r"\1 dad"),
@@ -616,16 +655,20 @@ GEMINI_FUNCTIONS = [
 last_verdict = {}      # newest Nemotron verdict (watch_loop)
 maps_places = []       # Google Maps places Gemini found in this request: [{"title", "placeId", "uri"}]
 
-def gemini_call(contents, system, loc):
+PASSENGER_FUNCTIONS = {"cabin_status"}   # the back seat may only ask; these functions only read
+
+def gemini_call(contents, system, loc, functions):
     tool_config = {"includeServerSideToolInvocations": True}
     if loc: tool_config["retrievalConfig"] = {"latLng": {"latitude": loc["lat"], "longitude": loc["lon"]}}
     body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "toolConfig": tool_config,
-            "tools": [{"google_search": {}}, {"google_maps": {}}, {"function_declarations": GEMINI_FUNCTIONS}]}
+            "tools": [{"google_search": {}}, {"google_maps": {}}, {"function_declarations": functions}]}
     req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
                                  data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY})
     with urllib.request.urlopen(req, timeout=45) as r: return json.load(r)
 
-def run_function(name, args, said=""):
+def run_function(name, args, said="", board="driver"):
+    if board != "driver" and name not in PASSENGER_FUNCTIONS:
+        return {"ok": False, "error": "not allowed from the back seat: passengers can only ask questions"}
     if name == "send_message":
         to, unknown = resolve_contacts(args.get("to"))
         if to == ["all"] and not addressed_to_all(said): return {"ok": False, "error": "the driver didn't say who: ask them which contact"}
@@ -659,16 +702,23 @@ def ask_google(s, query):
     status("Asking Google", query, "fg", 45000)
     say(s, "One moment.", "Asking Google", query, "fg")      # a tool chain can take a while: no silent wait
     loc = phone_location()
+    passenger = s["board"] == "passenger"
+    functions = [f for f in GEMINI_FUNCTIONS if not passenger or f["name"] in PASSENGER_FUNCTIONS]
     where = (" Google Maps already knows the car's position. Use Maps only when the driver asks about places, distances or"
              " routes: one query like 'pharmacy near me' is enough. Don't use Maps just to find out where the car is, and never"
              " search the web for coordinates." if loc else " The car's position is unknown.")
-    system = ("You are the co-pilot voice assistant in a car, talking to the driver. Use Google Search for current facts and "
-              "Google Maps for places, opening hours, distances and routes. When the driver wants to go somewhere, find the place with "
-              "Google Maps, then call show_directions with its name and address. Use the car's functions when the driver asks for an "
-              f"action (contacts: {', '.join(CONTACTS) or 'mom, dad'}). Never invent results: if a tool failed, say so. "
-              "The request comes from speech recognition of a driver who isn't a native speaker of the local language: place names may be "
+    who = ("You are the voice assistant in a car, talking to a passenger in the back seat. Use Google Search for current facts "
+           "and Google Maps for places, opening hours and distances. The passenger can only ask questions: you cannot send "
+           "messages, change anything in the car or give the driver directions for them; if they ask, say they should ask the driver. "
+           if passenger else
+           "You are the co-pilot voice assistant in a car, talking to the driver. Use Google Search for current facts and "
+           "Google Maps for places, opening hours, distances and routes. When the driver wants to go somewhere, find the place with "
+           "Google Maps, then call show_directions with its name and address. Use the car's functions when the driver asks for an "
+           f"action (contacts: {', '.join(CONTACTS) or 'mom, dad'}). ")
+    system = (who + "Never invent results: if a tool failed, say so. "
+              "The request comes from speech recognition of someone who isn't a native speaker of the local language: place names may be "
               "spelled the way they sound in English (\"campy\" for Kamppi); look for the real place nearby that sounds like it. "
-              "Your final answer is read aloud while driving: at most three short sentences, plain words, no lists, markdown, links or emoji. "
+              "Your final answer is read aloud in the moving car: at most three short sentences, plain words, no lists, markdown, links or emoji. "
               f"Now (UTC): {time.strftime('%A %d %B %Y, %H:%M', time.gmtime())}.{where}")
     _, heard, name = fix_place(query, in_sentence=True)
     if name: log(f"place name for Gemini: heard {heard!r}, maybe {name!r}")
@@ -678,7 +728,7 @@ def ask_google(s, query):
     t = time.time(); answer = ""
     try:
         for step in range(5):
-            res = gemini_call(contents, system, loc)
+            res = gemini_call(contents, system, loc, functions)
             cand = (res.get("candidates") or [{}])[0]
             content = cand.get("content") or {}
             for ch in (cand.get("groundingMetadata") or {}).get("groundingChunks") or []:
@@ -693,7 +743,7 @@ def ask_google(s, query):
             contents.append(content)                       # as returned: keeps tool calls and thought signatures
             replies = []
             for c in calls:
-                out = run_function(c.get("name"), c.get("args") or {}, query)
+                out = run_function(c.get("name"), c.get("args") or {}, query, s["board"])
                 log("Gemini called", c.get("name"), c.get("args"), "->", out)
                 replies.append({"functionResponse": {"name": c.get("name"), "id": c.get("id"), "response": out}})
             contents.append({"role": "user", "parts": replies})
@@ -746,6 +796,7 @@ def say(s, text, title, body, color):
         except Exception as e: log("text-to-speech failed:", e)
         finally: q.put(None)
     threading.Thread(target=synth, daemon=True).start()
+    topic = BOARD_TOPIC[s["board"]] + "/pcm"                  # the speaker of the board that asked
     start, sent = None, 0.0
     while (pcm := q.get()) is not None:
         # If the next sentence took longer to make than the board had buffered, the speaker
@@ -756,7 +807,7 @@ def say(s, text, title, body, color):
             ahead = sent - (time.monotonic() - start)
             if ahead > PLAY_LEAD_S: time.sleep(ahead - PLAY_LEAD_S)
             part = pcm[i:i + PCM_CHUNK]
-            client.publish("car/atech/voice/pcm", part)
+            client.publish(topic, part)
             sent += len(part) / 2 / SR
 
 # ---------- Nemotron: watch the cabin for danger near the driver ----------
@@ -812,10 +863,9 @@ HUB_LEVEL = {"none": "low", "watch": "medium", "danger": "high"}   # hub.py aler
 def speak_aside(text, title):
     # Say something that isn't an answer to a press (a back-seat sign), unless the driver is
     # talking to the car right now. It becomes the current "session", so a press interrupts it.
-    global session
     with lock:
-        if session and session["listening"]: return False
-        s = session = {"id": "aside", "sid": None, "chunks": {}, "listening": False, "started": time.time()}
+        if sessions.get("driver") and sessions["driver"]["listening"]: return False
+        s = sessions["driver"] = {"id": "aside", "board": "driver", "sid": None, "chunks": {}, "listening": False, "started": time.time()}
     say(s, text, title, text, "fg")
     return True
 

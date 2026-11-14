@@ -566,7 +566,7 @@ def on_connect(c, userdata, flags, rc, props=None):
 def on_message(c, userdata, m):
     global fix, last_threat
     # voice.py's own traffic (audio is binary), and Nemotron's verdict every few seconds (logged by voice.py)
-    if m.topic.startswith("car/atech/voice/") or m.topic == "car/voice/send/result": return
+    if m.topic.startswith(("car/atech/voice/", "car/passenger/voice/")) or m.topic == "car/voice/send/result": return
     if m.topic == "car/vision/nemotron":
         try:
             v = json.loads(m.payload.decode())

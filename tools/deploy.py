@@ -1,5 +1,5 @@
 # Deploy an app to the Jetson and follow its logs until it is up, then stop.
-#   python3 tools/deploy.py atech-flasher     (waits for the board's "mqtt: connected")
+#   python3 tools/deploy.py atech-flasher     (waits for "mqtt: connected" from every board it flashed)
 #   python3 tools/deploy.py jetson-hub        (waits for the hub's "MQTT connected")
 #   python3 tools/deploy.py unoq-camera       (copies the camera streamer to the Uno Q over SSH)
 # jetson-hub refuses to deploy while an SOS/accident/threat alert is still being sent: a restart
@@ -11,10 +11,11 @@ from datetime import datetime, timezone
 DEVICE = os.environ.get("WENDY_DEVICE", "wendyos-hackathon-device-4.local")
 APPS = {  # folder -> (wendy app name, line that means "up", log lines worth showing)
     "atech-flasher": ("atech-flasher", "mqtt: connected",
-                      ("tools ready", "toolchain changed", "built after", "SUCCESS", "+ atech", "FLASH_OK", "wifi:", "mqtt:")),
+                      ("tools ready", "toolchain changed", "built ", "SUCCESS", "+ atech", "FLASH_OK", "FLASHED", "/dev/tty", "taken to be",
+                       "wifi:", "mqtt:", "imu:", "passenger intercom", "responding", "reset reason", "result:")),
     "jetson-hub": ("car-hub", "MQTT connected", ("MQTT connected", "Telegram bot", "waiting for broker", "[vision]", "[dash]")),
 }
-FAIL = (" failed", "rror:", "Traceback", "No Atech board")
+FAIL = (" failed", "rror:", "Traceback", "No Atech board", "can't tell the boards apart", "look like the same one")
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 folder = args[0].strip("/").split("/")[-1]
@@ -96,6 +97,7 @@ if r.returncode != 0:
 print(stamp(), "deployed", app, flush=True)
 
 status = 1
+boards = None          # atech-flasher: the boards it flashed ("FLASHED: car=/dev/ttyACM0 passenger=/dev/ttyACM1")
 deploy_start = datetime.fromtimestamp(t0, timezone.utc)
 watchdog = threading.Timer(timeout, logs.kill); watchdog.start()   # stop even if the app goes quiet
 try:
@@ -109,7 +111,13 @@ try:
         for l in body.splitlines():
             if any(k in l for k in show + FAIL):
                 print(stamp(), l[:160], flush=True)
-        if ready in body: status = 0; print(stamp(), "UP"); break
+        if "FLASHED:" in body:
+            boards = set(re.findall(r"(\w+)=/dev/", body.split("FLASHED:", 1)[1].splitlines()[0]))
+        if app == "atech-flasher" and boards is not None:
+            for l in body.splitlines():
+                boards -= {b for b in boards if f'"key":"{b}"' in l and ready in l}
+            if not boards: status = 0; print(stamp(), "UP"); break
+        elif ready in body: status = 0; print(stamp(), "UP"); break
         if any(k in body for k in FAIL): print(stamp(), "FAILED"); break
     else:
         print(stamp(), "TIMEOUT: no ready line")

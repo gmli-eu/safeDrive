@@ -3,7 +3,7 @@
 Hardware for safer driving.
 
 ```
-Atech board (ESP32-S3)  --Wi-Fi/MQTT-->  Jetson (WendyOS): Mosquitto + hub.py  --HTTPS-->  Telegram
+Atech boards (ESP32-S3) --Wi-Fi/MQTT-->  Jetson (WendyOS): Mosquitto + hub.py  --HTTPS-->  Telegram
                                            + voice.py + Ollama (Gemma 4) --HTTPS-->  Gemini, Nemotron (Verda)
                                            ^
 iPhone (OwnTracks) ---MQTT location--------+
@@ -12,7 +12,7 @@ iPhone (OwnTracks) ---MQTT location--------+
 | Folder           | Runs on                            | What it does                                                                                                  |
 | ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker plus `hub.py`: turns the SOS long press into Telegram alerts with live location; `voice.py`: the voice assistant; `dash.py`: the SafeDrive page for the driver's phone |
-| `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware (`project.yaml`), flashes it to the board over USB, then streams the board's output |
+| `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware for both boards (`project.yaml`: driver, `passenger.yaml`: back-seat intercom), flashes each over USB, then streams their output |
 | `unoq-camera/`   | Arduino UNO Q (systemd service)    | `stream.py`: serves the USB camera's MJPEG over HTTP on port 8090 (`/stream.mjpg`, `/frame.jpg`, `/health`) |
 | `tools/`         | dev machine                        | `deploy.py` deploys an app and waits until it's up; `mqtt_peek.py` watches the broker                         |
 
@@ -31,13 +31,27 @@ iPhone (OwnTracks) ---MQTT location--------+
 
 ```sh
 python3 tools/deploy.py jetson-hub      # ~2 s once cached
-python3 tools/deploy.py atech-flasher   # ~1 min: build, flash, wait for the board's MQTT connection
+python3 tools/deploy.py atech-flasher   # ~1-2 min: build, flash both boards, wait for each board's MQTT connection
 python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over SSH, restart, wait for frames
 ```
 
 `deploy.py jetson-hub` first checks the hub log and refuses to deploy while an SOS, accident or threat alert from the last 2 minutes hasn't finished sending its clip and incident report, because a restart would drop them. `--check` runs only that check; `--force` deploys anyway.
 
 `deploy.py` runs the app's `make_compose.py`, which generates `compose.yml` with the code and secrets embedded. Then it runs `wendy run --detach` and follows the logs until the app is up. The device defaults to `wendyos-hackathon-device-4.local`; set `WENDY_DEVICE` to override it. Each run's `compose.yml` is generated and holds secrets, so it isn't committed.
+
+## Two boards on the Jetson's USB
+
+- **Board 1, the driver's** (`atech-flasher/project.yaml`): everything below except the intercom.
+- **Board 2, the back-seat intercom** (`atech-flasher/passenger.yaml`): button on port 9, speaker on ports 3-4, microphone on ports 13-14.
+- The flasher tells them apart by listening to each USB port for a few seconds: the driver board streams its orientation sensor, the passenger board its mic level (`rearmic_level`). It also remembers each board's USB serial number in its cache. A blank board is taken to be whichever one is missing. If it can't tell them apart, unplug the passenger board, deploy, plug it back in and deploy again.
+- Port 12 is the Reset button: Atech has no pins for it, so a double-width module can't use ports 11-12 (`atech validate` rejects it). The right column's pairs are 9-10, 10-11 and 13-14.
+
+## Back-seat intercom (board 2: button on port 9, speaker on ports 3-4, mic on ports 13-14)
+
+- Works like the driver's port 5 button: hold it while you talk, or tap to start and tap again when you're done. Green while it listens, blue while it thinks, a red flash and a low tone if the hub can't be reached. The answer plays on the back-seat speaker only.
+- **Questions only.** The back seat gets local answers ("how far is the moon?") and, when it says "Google", the Gemini agent with Search and Maps ("ask Google when the Ateneum closes"). It can never send a message to the family's Telegram bots, switch the light or put directions on the driver's phone: `voice.py` refuses those ("From the back seat I can only answer questions. Ask the driver for that."), and Gemini gets none of those functions for a back-seat request.
+- Nothing from the back seat shows on the driver's screen. The driver and the back seat can ask at the same time; each board keeps its own request.
+- Topics: `car/passenger/voice/start`, `/end` (board to hub), `/pcm`, `/stop` (hub to board), `car/passenger/status` (retained online flag). Mic audio goes to the same UDP port 1885 as the driver's; the session id tells them apart.
 
 ## SOS button (port 6)
 

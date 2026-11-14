@@ -1,0 +1,257 @@
+name: atech_passenger
+board: 14port
+libraries:
+  - knolleary/PubSubClient@^2.8
+# Board 2: the back-seat intercom. Same voice assistant as the driver's port 5 button, but the hub
+# only lets the back seat ask questions: no messages to the family, no light, no directions.
+# Port 12 is the Reset button: Atech has no pins for it, so the mic can't use ports 11-12.
+modules:
+  - {id: speaker,    instance: spk, ports: [3, 4]}     # the hub's spoken answers
+  - {id: button,     instance: btn, port: 9}           # press: ask the car a question, green while listening
+  - {id: microphone, instance: rearmic, ports: [13, 14]}   # streams to the hub while listening; its rearmic_level
+                                                          # events tell the flasher this is the passenger board
+code:
+  globals: |
+    #include <WiFi.h>
+    #include <PubSubClient.h>
+    #include <lwip/sockets.h>
+    #include <freertos/stream_buffer.h>
+
+    static const char* WIFI_SSID = "@WIFI_SSID@";   // filled in from secrets.json by make_compose.py
+    static const char* WIFI_PASS = "@WIFI_PASS@";
+    static const char* MQTT_HOST = "172.20.10.2";   // the Jetson
+    static const uint16_t MQTT_PORT = 1883;
+
+    WiFiClient netClient;
+    PubSubClient mqtt(netClient);
+
+    void logLine(const char* raw) {
+      // keep the JSON line valid: printable ASCII only, no quotes/backslashes
+      static char msg[400]; size_t j = 0;
+      for (size_t i = 0; raw[i] && j < sizeof(msg) - 1; i++) {
+        char c = raw[i];
+        msg[j++] = (c >= 32 && c <= 126 && c != '"' && c != '\\') ? c : '?';
+      }
+      msg[j] = 0;
+      Serial.printf("{\"type\":\"event\",\"payload\":{\"event_type\":\"log\",\"key\":\"passenger\",\"value\":\"%s\"}}\n", msg);
+    }
+
+    // ---------- Voice: button on port 9, mic on ports 13-14, speaker on ports 3-4 ----------
+    // Works like the driver's port 5 button: hold it and talk, or tap once to start and again to
+    // stop. Green while the mic streams 16 kHz audio to the hub (UDP port 1885, same packets as the
+    // driver board, told apart by the session id); stops on release (after a hold), on the next tap,
+    // or after 20 s. Blue while the hub thinks, until the answer starts playing (car/passenger/voice/pcm).
+    static const unsigned long VOICE_MAX_MS = 20000;
+    static const unsigned long VOICE_HOLD_MS = 600;    // held longer than this: push-to-talk, stop on release
+    static const unsigned long VOICE_CHIME_MS = 180;   // the start chime isn't sent to the hub
+    static const unsigned long THINK_MAX_MS = 30000;
+    static const size_t MIC_CHUNK_BYTES = 1024;        // fits one Wi-Fi frame: no IP fragments
+    static const uint16_t MIC_UDP_PORT = 1885;
+    int micFd = -1;
+    uint32_t voiceSid = 0, micSeq = 0;
+    StreamBufferHandle_t micBuf = NULL;    // mic task -> loop (0.5 s)
+    StreamBufferHandle_t playBuf = NULL;   // MQTT -> playback task (1.5 s; the hub stays ahead)
+    volatile bool micOn = false;
+    volatile bool playFlush = false;
+    bool listening = false;
+    bool voiceHeld = false;                // the press that started listening is still down
+    unsigned long voicePressAt = 0;
+    unsigned long listenAt = 0;
+    unsigned long thinkingAt = 0;          // 0 = not waiting for an answer
+    unsigned long offlineAt = 0;           // red flash: the hub can't be reached
+
+    void onMic(const int16_t* samples, int count, void*) {   // capture task, core 0: copy and return
+      size_t n = count * 2;
+      if (micOn && micBuf && xStreamBufferSpacesAvailable(micBuf) >= n) xStreamBufferSend(micBuf, samples, n, 0);
+    }
+
+    void playTask(void*) {
+      static int16_t buf[256];
+      for (;;) {
+        if (playFlush) {
+          while (xStreamBufferReceive(playBuf, buf, sizeof buf, 0) > 0) {}
+          playFlush = false;
+        }
+        size_t n = xStreamBufferReceive(playBuf, buf, sizeof buf, pdMS_TO_TICKS(20));
+        if (n >= 2) spk.writeSamples(buf, n / 2);
+      }
+    }
+
+    void voiceStart() {
+      if (!micBuf || !playBuf) { logLine("voice: off, no memory for the audio buffers"); return; }
+      if (!mqtt.connected()) {
+        offlineAt = millis();
+        spk.playNote(NOTE_C4, 250);
+        logLine("voice: not connected to the hub");
+        return;
+      }
+      playFlush = true;                      // a new question interrupts the last answer
+      thinkingAt = 0;
+      uint8_t junk[256];
+      while (xStreamBufferReceive(micBuf, junk, sizeof junk, 0) > 0) {}
+      if (micFd < 0) {
+        micFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (micFd >= 0) fcntl(micFd, F_SETFL, fcntl(micFd, F_GETFL, 0) | O_NONBLOCK);
+      }
+      if (micFd < 0) { logLine("voice: no UDP socket"); return; }
+      voiceSid = esp_random(); micSeq = 0;
+      char start[48]; snprintf(start, sizeof start, "{\"sr\":16000,\"sid\":%lu}", (unsigned long)voiceSid);
+      mqtt.publish("car/passenger/voice/start", start);
+      listening = true; listenAt = millis();
+      btn.setColor(0, 255, 0);
+      spk.playNote(NOTE_C5, 70); spk.playNote(NOTE_G5, 90);
+      logLine("voice: listening");
+    }
+
+    void voiceStop(const char* reason) {
+      if (!listening) return;
+      listening = false; micOn = false;
+      char j[48]; snprintf(j, sizeof j, "{\"reason\":\"%s\"}", reason);
+      if (mqtt.connected()) mqtt.publish("car/passenger/voice/end", j);
+      spk.playNote(NOTE_G5, 60); spk.playNote(NOTE_C5, 90);
+      if (!strcmp(reason, "offline")) { offlineAt = millis(); thinkingAt = 0; }
+      else thinkingAt = millis();
+      char b[48]; snprintf(b, sizeof b, "voice: stopped listening (%s)", reason); logLine(b);
+    }
+
+    // From the hub: car/passenger/voice/pcm (the spoken answer, raw 16 kHz PCM) and
+    // car/passenger/voice/stop (the hub's backstop when "end" got lost).
+    void onMqtt(char* topic, byte* payload, unsigned int len) {
+      if (!strcmp(topic, "car/passenger/voice/pcm")) {
+        thinkingAt = 0;
+        if (playBuf && !(len & 1) && !listening && xStreamBufferSpacesAvailable(playBuf) >= len)
+          xStreamBufferSend(playBuf, payload, len, 0);
+      } else if (!strcmp(topic, "car/passenger/voice/stop")) {
+        voiceStop("hub");
+      }
+    }
+
+    // Non-blocking check that the hub's port answers before mqtt.connect() (which blocks for up
+    // to 3 s when the Jetson isn't there and would freeze the button). Same as the driver board.
+    int probeFd = -1;
+    unsigned long probeStartedAt = 0;
+    void probeClose() { if (probeFd >= 0) { close(probeFd); probeFd = -1; } }
+    bool probeStart() {
+      probeClose();
+      probeFd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (probeFd < 0) return false;
+      fcntl(probeFd, F_SETFL, fcntl(probeFd, F_GETFL, 0) | O_NONBLOCK);
+      sockaddr_in addr = {};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(MQTT_PORT);
+      addr.sin_addr.s_addr = inet_addr(MQTT_HOST);
+      if (connect(probeFd, (sockaddr*)&addr, sizeof addr) < 0 && errno != EINPROGRESS) { probeClose(); return false; }
+      probeStartedAt = millis();
+      return true;
+    }
+    // 1 = the hub answered, 0 = still waiting, -1 = failed or timed out (closed).
+    int probePoll() {
+      if (probeFd < 0) return -1;
+      fd_set w; FD_ZERO(&w); FD_SET(probeFd, &w);
+      timeval tv = {0, 0};
+      if (select(probeFd + 1, NULL, &w, NULL, &tv) > 0) {
+        int err = 0; socklen_t len = sizeof err;
+        getsockopt(probeFd, SOL_SOCKET, SO_ERROR, &err, &len);
+        probeClose();
+        return err == 0 ? 1 : -1;
+      }
+      if (millis() - probeStartedAt > 5000) { probeClose(); return -1; }
+      return 0;
+    }
+
+    void keepConnected() {
+      static unsigned long lastTry = 0;
+      if (WiFi.status() != WL_CONNECTED) {
+        probeClose();
+        if (millis() - lastTry > 15000) {
+          lastTry = millis();
+          char buf[64]; snprintf(buf, sizeof buf, "wifi: retry, last status=%d", (int)WiFi.status());
+          logLine(buf);
+          WiFi.disconnect(); WiFi.begin(WIFI_SSID, WIFI_PASS);
+        }
+        return;
+      }
+      static bool wifiLogged = false;
+      if (!wifiLogged) { wifiLogged = true; char b[64]; snprintf(b, sizeof b, "wifi: connected ip=%s", WiFi.localIP().toString().c_str()); logLine(b); }
+      if (!mqtt.connected()) {
+        static bool unreachableLogged = false;
+        if (probeFd >= 0) {
+          int r = probePoll();
+          if (r == 1) {
+            unreachableLogged = false;
+            if (mqtt.connect("atech-passenger", "car/passenger/status", 1, true, "{\"online\":false}")) {
+              mqtt.publish("car/passenger/status", "{\"online\":true}", true);
+              mqtt.subscribe("car/passenger/voice/pcm");
+              mqtt.subscribe("car/passenger/voice/stop");
+              logLine("mqtt: connected");
+            } else {
+              logLine("mqtt: connect failed");
+            }
+          } else if (r < 0 && !unreachableLogged) {
+            unreachableLogged = true;   // log once, not every retry
+            logLine("mqtt: hub not reachable, retrying every 3 s");
+          }
+        } else if (millis() - lastTry > 3000) {
+          lastTry = millis();
+          probeStart();
+        }
+      }
+      mqtt.loop();
+    }
+  setup: |
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    mqtt.setCallback(onMqtt);
+    mqtt.setSocketTimeout(2);
+    mqtt.setBufferSize(4096);          // voice audio: 3.2 KB per message
+    micBuf = xStreamBufferCreate(16384, 1);
+    playBuf = xStreamBufferCreate(49152, 2);
+    if (micBuf && playBuf) {
+      rearmic.onAudio(onMic, nullptr);
+      xTaskCreatePinnedToCore(playTask, "VoicePlay", 4096, nullptr, 2, nullptr, 0);
+    } else logLine("voice: off, no memory for the audio buffers");
+    spk.setVolume(0.6f);               // same as the driver board: 1.0 clips
+    btn.off();
+    logLine("passenger intercom: button 9, mic 13-14, speaker 3-4");
+  loop: |
+    keepConnected();
+
+    // Hold the button while talking (stops on release), or tap to start and tap again to stop.
+    if (btn.wasPressed()) {
+      if (listening) voiceStop("button");
+      else { voiceStart(); voiceHeld = listening; voicePressAt = millis(); }
+    }
+    if (voiceHeld && !btn.isPressed()) {
+      voiceHeld = false;
+      if (listening && millis() - voicePressAt >= VOICE_HOLD_MS) voiceStop("released");   // a short tap keeps listening
+    }
+    if (listening) {
+      if (!micOn && millis() - listenAt >= VOICE_CHIME_MS) micOn = true;
+      static uint8_t pkt[8 + MIC_CHUNK_BYTES];
+      static sockaddr_in hubAddr = {};
+      hubAddr.sin_family = AF_INET; hubAddr.sin_port = htons(MIC_UDP_PORT); hubAddr.sin_addr.s_addr = inet_addr(MQTT_HOST);
+      while (xStreamBufferBytesAvailable(micBuf) >= MIC_CHUNK_BYTES) {
+        memcpy(pkt, &voiceSid, 4); memcpy(pkt + 4, &micSeq, 4);   // ESP32 is little-endian
+        xStreamBufferReceive(micBuf, pkt + 8, MIC_CHUNK_BYTES, 0);
+        sendto(micFd, pkt, sizeof pkt, 0, (sockaddr*)&hubAddr, sizeof hubAddr);   // non-blocking: a full buffer drops it
+        micSeq++;
+      }
+      if (!mqtt.connected()) voiceStop("offline");
+      else if (millis() - listenAt > VOICE_MAX_MS) voiceStop("timeout");
+    }
+    if (thinkingAt && millis() - thinkingAt > THINK_MAX_MS) thinkingAt = 0;
+    if (offlineAt && millis() - offlineAt > 1500) offlineAt = 0;
+
+    // The button's light: green = listening, blue = thinking, red flash = no hub, otherwise off.
+    // Re-sent every second, because one garbled command over long wires would stick.
+    static int shown = -1;
+    static unsigned long lightAt = 0;
+    int want = listening ? 1 : offlineAt ? 3 : thinkingAt ? 2 : 0;
+    if (want != shown || millis() - lightAt > 1000) {
+      shown = want; lightAt = millis();
+      if (want == 1) btn.setColor(0, 255, 0);
+      else if (want == 2) btn.setColor(0, 60, 255);
+      else if (want == 3) btn.setColor(255, 0, 0);
+      else btn.off();
+    }

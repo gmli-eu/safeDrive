@@ -1,4 +1,4 @@
-# Generates compose.yml with project.yaml (zlib-compressed: Wendy caps each env var at 32 KB)
+# Generates compose.yml with project.yaml and passenger.yaml (zlib-compressed: Wendy caps each env var at 32 KB)
 # and runner.py embedded as base64
 # (Wendy skips bind mounts and rejects newlines in env vars).
 # Wi-Fi credentials come from secrets.json (see secrets.example.json) and are filled
@@ -15,11 +15,14 @@ def c_string(value):
     # Contents of a C string literal: escape backslashes and quotes.
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
-project = (here / "project.yaml").read_text()
-for key, placeholder in (("wifi_ssid", "@WIFI_SSID@"), ("wifi_pass", "@WIFI_PASS@")):
-    if placeholder not in project:
-        sys.exit(f"{placeholder} not found in project.yaml")
-    project = project.replace(placeholder, c_string(secrets[key]))
+def firmware(name):
+    # Two boards: project.yaml (driver) and passenger.yaml (back-seat intercom).
+    text = (here / name).read_text()
+    for key, placeholder in (("wifi_ssid", "@WIFI_SSID@"), ("wifi_pass", "@WIFI_PASS@")):
+        if placeholder not in text:
+            sys.exit(f"{placeholder} not found in {name}")
+        text = text.replace(placeholder, c_string(secrets[key]))
+    return base64.b64encode(zlib.compress(text.encode(), 9)).decode()
 
 b64 = lambda data: base64.b64encode(data).decode()
 compose = f"""services:
@@ -32,7 +35,8 @@ compose = f"""services:
       - atech-cache:/cache
     environment:
       RUNNER_B64: "{b64((here / 'runner.py').read_bytes())}"
-      PROJECT_B64: "{b64(zlib.compress(project.encode(), 9))}"
+      PROJECT_B64: "{firmware('project.yaml')}"
+      PASSENGER_B64: "{firmware('passenger.yaml')}"
 volumes:
   atech-cache:
 """

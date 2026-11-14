@@ -5,6 +5,7 @@
   "entitlements": [
     { "type": "network", "mode": "host" },
     { "type": "serial", "device": "ttyACM0" },
+    { "type": "serial", "device": "ttyACM1" },
     { "type": "usb" }
   ]
 }

@@ -1,5 +1,6 @@
-# Generates compose.yml: Mosquitto + hub + camera buffer (vision.py). hub.py and vision.py are embedded
-# as base64 (no build needed; Wendy skips bind mounts and rejects newlines in env vars). Secrets come from secrets.json.
+# Generates compose.yml: Mosquitto + hub + voice assistant (voice.py) + Ollama (its local LLM)
+# + camera buffer (vision.py). hub.py, voice.py and vision.py are embedded as base64 (no build needed; Wendy skips bind mounts and
+# rejects newlines in env vars). Secrets come from secrets.json.
 import base64, json, pathlib, zlib
 here = pathlib.Path(__file__).parent
 secrets = json.loads((here / "secrets.json").read_text()) if (here / "secrets.json").exists() else {}
@@ -18,6 +19,22 @@ boot = ("import os, subprocess, sys, base64, shutil; "
         "import zlib; exec(zlib.decompress(base64.b64decode(os.environ['HUB_B64'])))")
 env = {"HUB_B64": hub_b64, "MQTT_HOST": "127.0.0.1", "LIVE_PERIOD": "900", "STATE_DIR": "/data",
        "TELEGRAM_BOTS": json.dumps(secrets.get("telegram_bots", []))}
+bots = secrets.get("telegram_bots", [])
+if not (secrets.get("gemini_api_key") and secrets.get("verda_inference_key")):
+    # Fall back to GEMINI_API_KEY / VERDA_INFERENCE_KEY in the repo's .env (ignored by git, like secrets.json).
+    env_file = here.parent / ".env"
+    for line in env_file.read_text().splitlines() if env_file.exists() else []:
+        k, _, v = line.partition("=")
+        if k.strip() in ("GEMINI_API_KEY", "VERDA_INFERENCE_KEY") and v.strip() and not secrets.get(k.strip().lower()):
+            secrets[k.strip().lower()] = v.strip().strip('"').strip("'")
+voice_env = {"VOICE_B64": b64z(here / "voice.py"), "MQTT_HOST": "127.0.0.1",
+             "OLLAMA_URL": "http://127.0.0.1:11434", "DATA_DIR": "/data", "HUB_STATE": "/hub/telegram.json",
+             "CONTACTS": json.dumps([b["name"] for b in bots]),   # names only: Telegram stays in the hub
+             "GEMINI_API_KEY": secrets.get("gemini_api_key", ""),
+             "VERDA_INFERENCE_KEY": secrets.get("verda_inference_key", ""),   # Nemotron 3.5 Super VL
+             "VISION_URL": "http://127.0.0.1:8091"}
+for key in ("llm_model", "whisper_model", "piper_voice", "gemini_model"):   # optional overrides
+    if secrets.get(key): voice_env[key.upper()] = secrets[key]
 vision_env = {"VISION_B64": b64z(here / "vision.py"), "DATA_DIR": "/data",
               "CAMERA_URL": secrets.get("camera_url", "http://172.20.10.4:8090/stream.mjpg")}   # the Uno Q (unoq-camera/)
 compose = f"""services:
@@ -35,7 +52,29 @@ compose = f"""services:
     volumes:
       - hub-data:/data
     environment:
-""" + "".join(f"      {k}: {json.dumps(v)}\n" for k, v in env.items()) + """  vision:
+""" + "".join(f"      {k}: {json.dumps(v)}\n" for k, v in env.items()) + f"""  ollama:
+    image: ollama/ollama:0.40.15
+    network_mode: host
+    restart: always
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      OLLAMA_HOST: "127.0.0.1:11434"
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_CONTEXT_LENGTH: "4096"
+  voice:
+    image: python:3.12-slim-bookworm
+    command: ["python", "-u", "-c", "import os, base64, zlib; exec(zlib.decompress(base64.b64decode(os.environ['VOICE_B64'])))"]
+    network_mode: host
+    restart: always
+    depends_on: [mosquitto]   # not ollama: voice.py waits for it, and redeploying voice mustn't restart a model download
+    volumes:
+      - voice-data:/data
+      - ollama-models:/ollama   # voice.py downloads the LLM into Ollama's store itself (IPv4)
+      - hub-data:/hub
+    environment:
+""" + "".join(f"      {k}: {json.dumps(v)}\n" for k, v in voice_env.items()) + """  vision:
     image: python:3.12-slim-bookworm
     command: ["python", "-u", "-c", "import os, base64, zlib; exec(zlib.decompress(base64.b64decode(os.environ['VISION_B64'])))"]
     network_mode: host
@@ -45,8 +84,10 @@ compose = f"""services:
     environment:
 """ + "".join(f"      {k}: {json.dumps(v)}\n" for k, v in vision_env.items()) + """volumes:
   hub-data:
+  voice-data:
   vision-data:
+  ollama-models:
 """
 assert "$" not in compose
 (here / "compose.yml").write_text(compose)
-print("compose.yml written", f"({len(secrets.get('telegram_bots', []))} telegram bots)")
+print("compose.yml written", f"({len(bots)} telegram bots, Gemini {'on' if voice_env['GEMINI_API_KEY'] else 'off: no gemini_api_key'})")

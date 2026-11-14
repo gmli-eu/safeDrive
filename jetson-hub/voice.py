@@ -1,0 +1,648 @@
+# SafeDrive voice assistant (runs on the Jetson, next to hub.py).
+# Press the port-5 button and talk: "hey car, send a message to mom, I'm running 5 min late",
+# "hey car, ask Google what's the weather today", "hey car, turn on the light".
+#   board mic --UDP port 1885--> speech-to-text (faster-whisper, local)
+#   --> what to do (local LLM through Ollama; a few fixed phrases also work without it)
+#   --> Telegram message (through hub.py) / Gemini (only for "ask Google") / light
+#   --> spoken reply (Piper, local) --MQTT car/atech/voice/pcm--> board speaker
+import os, subprocess, sys, shutil
+
+# ---------- dependencies: installed once into the data volume, copied in on every start ----------
+# The volume is mounted noexec, so native libraries can't load from it: keep the installed
+# packages cached there and copy them into the container filesystem to use them.
+PKGS = ["faster-whisper==1.2.1", "piper-tts==1.8.0", "soxr==1.1.0", "paho-mqtt==2.1.0", "pillow==11.3.0"]
+CACHE_SITE = "/data/site-voice-2"          # bump the number when PKGS changes
+RUN_SITE = "/opt/voice-site"
+if not os.path.isdir(RUN_SITE):
+    if os.path.isdir(CACHE_SITE):
+        subprocess.run(["cp", "-a", CACHE_SITE, RUN_SITE], check=True)
+    else:
+        print("installing voice packages (first start only)...", flush=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--root-user-action=ignore",
+                        "--disable-pip-version-check", "--cache-dir", "/data/pip", "--target", RUN_SITE, *PKGS], check=True)
+        shutil.rmtree(CACHE_SITE + ".new", True)
+        subprocess.run(["cp", "-a", RUN_SITE, CACHE_SITE + ".new"], check=True)
+        os.rename(CACHE_SITE + ".new", CACHE_SITE)
+sys.path.insert(0, RUN_SITE)
+os.environ.setdefault("HF_HOME", "/data/hf")
+# Download models with plain Python HTTP (IPv4 first, see below), not hf_xet: xet makes its own
+# connections, tries IPv6 first, and the hotspot's broken IPv6 left the Whisper download hanging.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+import json, pathlib, queue, re, socket, threading, time, urllib.error, urllib.request, uuid
+import numpy as np
+import paho.mqtt.client as mqtt
+
+# IPv4 first: on a phone hotspot IPv6 is often advertised but broken (same as hub.py).
+_getaddrinfo = socket.getaddrinfo
+socket.getaddrinfo = lambda *a, **k: sorted(_getaddrinfo(*a, **k), key=lambda ai: ai[0] != socket.AF_INET)
+
+MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemma4:e2b")       # Gemma 4 E2B: the offline brain, on the Jetson GPU
+# Gemma 4 can think before answering: off, a voice command must answer in about a second.
+# (Only for Gemma: Ollama refuses "think" for models that can't think.)
+NO_THINK = {"think": False} if LLM_MODEL.startswith("gemma4") else {}
+OLLAMA_STORE = pathlib.Path(os.environ.get("OLLAMA_STORE", "/ollama/models"))   # Ollama's model volume
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small.en")
+PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-lessac-medium")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+# Nemotron 3.5 Super VL (Verda endpoint) watches the in-car camera for danger near the driver.
+NEMOTRON_URL = os.environ.get("NEMOTRON_URL", "https://containers.datacrunch.io/nemotron-3-5-super-vl-b300/v1")
+NEMOTRON_MODEL = os.environ.get("NEMOTRON_MODEL", "nemotron-3.5-super-vl")
+VERDA_KEY = os.environ.get("VERDA_INFERENCE_KEY", "")
+VISION_URL = os.environ.get("VISION_URL", "http://127.0.0.1:8091")   # vision.py: newest camera frame
+CONTACTS = json.loads(os.environ.get("CONTACTS") or "[]")      # Telegram bot names, e.g. ["mom", "dad"]
+HUB_STATE = pathlib.Path(os.environ.get("HUB_STATE", "/hub/telegram.json"))   # hub.py's state: last phone fix
+DATA = pathlib.Path(os.environ.get("DATA_DIR", "/data"))
+
+SR = 16000                 # board mic and speaker sample rate
+PLAY_LEAD_S = 0.6          # how far ahead of the speaker the PCM is sent (board buffers 1.5 s)
+PCM_CHUNK = 3200           # bytes per MQTT message: 100 ms
+MIC_PORT = 1885            # the board sends mic audio here over UDP (see udp_loop)
+
+def log(*a): print(time.strftime("%H:%M:%S"), "[voice]", *a, flush=True)
+
+# ---------- models ----------
+whisper = piper = vad = None
+llm_ready = False
+
+def load_models():
+    global whisper, piper, vad
+    from faster_whisper import WhisperModel
+    from faster_whisper import vad as fw_vad
+    from piper import PiperVoice
+    t = time.time()
+    whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", cpu_threads=4)
+    log(f"speech-to-text ready ({WHISPER_MODEL}, {time.time() - t:.0f}s)")
+    vad = fw_vad
+    lang, region, name, quality = re.match(r"(\w+)_(\w+)-(\w+)-(\w+)", PIPER_VOICE).groups()
+    vdir = DATA / "piper"; vdir.mkdir(parents=True, exist_ok=True)
+    base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang}/{lang}_{region}/{name}/{quality}/{PIPER_VOICE}"
+    for ext in (".onnx", ".onnx.json"):
+        f = vdir / (PIPER_VOICE + ext)
+        if not f.exists():
+            log("downloading voice", f.name)
+            urllib.request.urlretrieve(base + ext, str(f) + ".part"); os.rename(str(f) + ".part", f)
+    piper = PiperVoice.load(vdir / (PIPER_VOICE + ".onnx"))
+    log("text-to-speech ready", PIPER_VOICE)
+
+def ollama(path, body, timeout=60):
+    req = urllib.request.Request(OLLAMA_URL + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r: return json.load(r)
+
+models_loaded = threading.Event()   # Whisper and Piper are up: the LLM download may start
+
+def prepare_llm():
+    # Fetch the model once (after Whisper, so the two don't share the hotspot), then keep it loaded.
+    global llm_ready
+    models_loaded.wait()
+    while True:
+        try:
+            have = {m["name"] for m in ollama_get("/api/tags")["models"]}
+            if LLM_MODEL not in have: fetch_llm()
+            t = time.time()
+            ollama("/api/generate", {"model": LLM_MODEL, "prompt": "hi", "stream": False, "keep_alive": -1, **NO_THINK, "options": {"num_predict": 1}}, timeout=600)
+            llm_ready = True
+            log(f"local LLM ready ({LLM_MODEL}, loaded in {time.time() - t:.0f}s)")
+            return
+        except Exception as e:
+            log("local LLM not ready, retrying in 30 s:", repr(e)); time.sleep(30)
+
+def fetch_llm():
+    # Download the model from the Ollama registry here, straight into Ollama's model store (the
+    # ollama-models volume, mounted at OLLAMA_STORE), exactly as Ollama's own pull would lay it
+    # out: every layer and the config as blobs, then the manifest. Ollama's own pull goes over
+    # IPv6, which the phone hotspot keeps resetting; Python here prefers IPv4. Resumable across
+    # restarts, and every blob is checked against its sha256 before it's put in place.
+    import hashlib
+    name, _, tag = LLM_MODEL.partition(":")
+    repo = name if "/" in name else "library/" + name
+    reg = f"https://registry.ollama.ai/v2/{repo}"
+    req = urllib.request.Request(f"{reg}/manifests/{tag or 'latest'}", headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"})
+    with urllib.request.urlopen(req, timeout=30) as r: manifest_raw = r.read()
+    manifest = json.loads(manifest_raw)
+    blobs = OLLAMA_STORE / "blobs"; blobs.mkdir(parents=True, exist_ok=True)
+    total = sum(l["size"] for l in manifest["layers"]) + manifest["config"]["size"]
+    log(f"downloading {LLM_MODEL}: {total / 1e9:.1f} GB (first start only)")
+    got = 0
+    for layer in [manifest["config"], *manifest["layers"]]:
+        digest, size = layer["digest"], layer["size"]
+        path = blobs / digest.replace(":", "-")
+        if path.exists() and path.stat().st_size == size: got += size; continue
+        part = path.with_name(path.name + ".voicepart")
+        while (done := part.stat().st_size if part.exists() else 0) < size:
+            try:
+                rq = urllib.request.Request(f"{reg}/blobs/{digest}", headers={"Range": f"bytes={done}-"})
+                with urllib.request.urlopen(rq, timeout=60) as r, open(part, "ab" if r.status == 206 else "wb") as f:
+                    if r.status != 206: done = 0
+                    mark = done
+                    while (buf := r.read(1 << 20)):
+                        f.write(buf); done += len(buf)
+                        if done - mark >= 250_000_000: mark = done; log(f"LLM download {(got + done) * 100 // total}%")
+            except OSError as e:
+                log("LLM download interrupted, resuming in 10 s:", e); time.sleep(10)
+        h = hashlib.sha256()
+        with open(part, "rb") as f:
+            while (buf := f.read(1 << 22)): h.update(buf)
+        if "sha256:" + h.hexdigest() != digest:
+            part.unlink(); raise RuntimeError(f"LLM download corrupt ({digest[:19]}), starting that part over")
+        part.rename(path); got += size
+    mdir = OLLAMA_STORE / "manifests" / "registry.ollama.ai" / repo
+    mdir.mkdir(parents=True, exist_ok=True)
+    (mdir / (tag or "latest")).write_bytes(manifest_raw)       # written last: Ollama sees the model only once complete
+    log(f"{LLM_MODEL} installed")
+
+def ollama_get(path):
+    with urllib.request.urlopen(OLLAMA_URL + path, timeout=10) as r: return json.load(r)
+
+# ---------- MQTT ----------
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="car-voice")
+lock = threading.Lock()
+session = None             # the current press: dict(id, audio bytearray, listening, started)
+send_results = {}          # message id -> hub's reply
+send_done = threading.Condition(lock)
+
+def status(title, body="", color="fg", ms=8000):
+    # Shown on the board's screen. ASCII only, no quotes (the board's parser is simple).
+    clean = lambda s: re.sub(r'[^\x20-\x7e]', '', s.replace('"', "'").replace("\\", "/"))
+    client.publish("car/atech/voice/status", json.dumps({"title": clean(title)[:13], "body": clean(body)[:200], "color": color, "ms": ms}))
+
+def on_connect(c, userdata, flags, rc, props=None):
+    log("MQTT connected", rc)
+    c.subscribe([("car/atech/voice/#", 0), ("car/voice/send/result", 1)])
+
+def on_message(c, userdata, m):
+    global session
+    if m.topic == "car/atech/voice/pcm": return            # our own output
+    try: data = json.loads(m.payload.decode() or "null")
+    except Exception: data = None
+    if m.topic == "car/atech/voice/start":
+        sid = (data or {}).get("sid")
+        with lock:
+            session = {"id": uuid.uuid4().hex[:8], "sid": sid, "chunks": early.pop(sid, {}), "listening": True, "started": time.time()}
+            early.clear()
+            s = session
+        log("listening", s["id"])
+        threading.Thread(target=listen, args=(s,), daemon=True).start()
+    elif m.topic == "car/atech/voice/end":
+        reason = (data or {}).get("reason")
+        log("board stopped listening:", reason)
+        with lock:
+            if reason == "accident": session = None   # cut off mid-sentence: never act on half a request
+            elif session: session["listening"] = False
+    elif m.topic == "car/voice/send/result" and isinstance(data, dict):
+        with lock:
+            send_results[data.get("id")] = data
+            send_done.notify_all()
+
+def current(s):
+    with lock: return session is s
+
+# ---------- mic audio: UDP from the board ----------
+# Each packet: session id (uint32 LE), sequence number (uint32 LE), then 16 kHz int16 PCM.
+# UDP, not MQTT: when Wi-Fi is congested, a TCP write blocks the board's loop (the SOS button
+# and the knob freeze); a UDP packet is just dropped. A lost packet becomes a short silence.
+early = {}                 # packets that beat the MQTT start message: sid -> {seq: pcm}
+
+def udp_loop():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", MIC_PORT))
+    while True:
+        pkt = sock.recv(4096)
+        if len(pkt) < 10: continue
+        sid, seq = int.from_bytes(pkt[0:4], "little"), int.from_bytes(pkt[4:8], "little")
+        with lock:
+            if session and session["sid"] == sid:
+                if seq < 2000: session["chunks"][seq] = pkt[8:]      # 64 s cap; stragglers after "end" still count
+            elif len(early) < 4 and seq < 50:
+                early.setdefault(sid, {})[seq] = pkt[8:]
+
+def session_audio(s):
+    # Packets in order; a missing one becomes silence of the same length. Call with lock held.
+    ch = s["chunks"]
+    if not ch: return b""
+    size = len(next(iter(ch.values())))
+    return b"".join(ch.get(i, bytes(size)) for i in range(max(ch) + 1))
+
+# ---------- listening: decide when the driver has finished talking ----------
+def to_float(pcm):
+    a = np.frombuffer(bytes(pcm[: len(pcm) // 2 * 2]), dtype=np.int16).astype(np.float32) / 32768
+    peak = float(np.abs(a).max()) if len(a) else 0
+    return a * min(20.0, 0.5 / peak) if peak > 1e-4 else a   # the mic is quiet: bring speech up to a usable level
+
+def listen(s):
+    # The driver decides when they're done: release after a hold, or a second tap (the board
+    # sends "end"). The board also gives up after 20 s; this is only a backstop if "end" is lost.
+    while True:
+        time.sleep(0.1)
+        with lock:
+            if session is not s: return
+            if not s["listening"]: break
+        if time.time() - s["started"] > 25:
+            client.publish("car/atech/voice/stop", "{}"); break
+    time.sleep(0.2)                                          # the last packets may still be on their way
+    with lock:
+        if session is not s: return
+        s["listening"] = False
+        pcm = session_audio(s)
+    log(f"got {len(pcm) / 2 / SR:.1f}s of audio")
+    try: handle(s, pcm)
+    except Exception as e:
+        log("voice request failed:", repr(e))
+        if not current(s): return
+        if whisper is None:   # first start: models still downloading or loading
+            say(s, "I'm still starting up. Try again in a minute.", "Starting up", "Voice models are still loading. Try again in a minute.", "warn")
+        else: say(s, "Sorry, something went wrong.", "Error", str(e)[:120], "alert")
+
+# ---------- speech to text ----------
+WAKE = re.compile(r"^\W*(?:(?:hey|hi|hello|ok|okay|a)\W+)?(?:car|cars|car's|kar|carl)\b\W*", re.I)
+
+def transcribe(pcm):
+    if whisper is None: raise RuntimeError("speech-to-text is still loading")
+    audio = to_float(pcm)
+    # No speech at all: don't transcribe. Whisper invents text from silence and noise
+    # ("Thank you."), which must never turn into a message to someone.
+    if vad and not vad.get_speech_timestamps(audio, vad.VadOptions(threshold=0.5)):
+        log("no speech in the recording")
+        return ""
+    t = time.time()
+    # Keep the prompt to the wake words: Whisper sometimes repeats its prompt on unclear audio.
+    segs, _ = whisper.transcribe(audio, language="en", beam_size=3, vad_filter=False, initial_prompt="Hey car.")
+    text = " ".join(x.text.strip() for x in segs).strip()
+    log(f"heard in {time.time() - t:.1f}s: {text!r}")
+    return WAKE.sub("", text).strip()
+
+# ---------- what does the driver want? ----------
+ACTIONS = ["send_message", "ask_google", "light", "answer", "unclear"]
+SCHEMA = {"type": "object", "properties": {
+    "action": {"type": "string", "enum": ACTIONS},
+    "to": {"type": "array", "items": {"type": "string"}},
+    "text": {"type": "string"}, "query": {"type": "string"},
+    "on": {"type": "boolean"}, "reply": {"type": "string"}}, "required": ["action"]}
+
+def system_prompt():
+    who = ", ".join(CONTACTS) or "mom, dad"
+    return f"""You turn what a driver says to their car into one JSON action. Reply with JSON only.
+Actions:
+- send_message: send a text message. "to" lists who gets it, from: {who}, or ["all"] for both/everyone/the family. "text" is the message itself, as the driver wants it sent (first person, without "send a message to ..." and without "hey car").
+- ask_google: the driver asks to ask or search Google, or wants anything that needs the internet, today's information or places (weather, news, traffic, scores, opening times, nearest fuel or pharmacy, directions), including requests that combine that with a message ("find a pharmacy and text mom I'm stopping there"). "query" is the driver's whole request, as a complete sentence.
+- light: turn the car's light on or off. "on" is true or false.
+- answer: anything else you can answer yourself (simple facts, maths, jokes, small talk). "reply" is the spoken answer: one or two short sentences, no lists or symbols.
+- unclear: empty, cut off, or not understandable."""
+
+EXAMPLES = [
+    ("send message to mom, I'm running 5 min late", {"action": "send_message", "to": ["mom"], "text": "I'm running 5 min late."}),
+    ("tell mom and dad that I'm leaving the gym now", {"action": "send_message", "to": ["all"], "text": "I'm leaving the gym now."}),
+    ("ask google what's the weather for today", {"action": "ask_google", "query": "What's the weather for today?"}),
+    ("turn off the light", {"action": "light", "on": False}),
+]
+
+def understand(text):
+    if not llm_ready:
+        log("local LLM not ready: using the fixed phrases")
+        return fallback(text)
+    msgs = [{"role": "system", "content": system_prompt()}]
+    for q, a in EXAMPLES:
+        msgs += [{"role": "user", "content": q}, {"role": "assistant", "content": json.dumps(a)}]
+    msgs.append({"role": "user", "content": text})
+    t = time.time()
+    try:
+        r = ollama("/api/chat", {"model": LLM_MODEL, "messages": msgs, "format": SCHEMA, "stream": False, **NO_THINK,
+                                 "keep_alive": -1, "options": {"temperature": 0, "num_predict": 200}}, timeout=30)
+        intent = json.loads(r["message"]["content"])
+    except Exception as e:
+        log("local LLM failed, using the fixed phrases:", e)
+        return fallback(text)
+    log(f"understood in {time.time() - t:.1f}s:", intent)
+    return intent
+
+def fallback(text):
+    # Works without the LLM (still downloading, or down): the common phrasings only.
+    t = text.strip()
+    m = re.match(r"(?:please\s+)?(?:send|text|message|tell)\s+(?:a\s+)?(?:message\s+|text\s+)?(?:to\s+)?(\w+)(?:\s+and\s+(\w+))?\W*(?:that\s+|saying\s+)?(.+)", t, re.I)
+    if m:
+        to = [w.lower() for w in m.group(1, 2) if w]
+        return {"action": "send_message", "to": ["all"] if {"both", "everyone", "all"} & set(to) else to, "text": m.group(3)}
+    # "Google" anywhere ("ask Google", "let's google", Whisper mishears the verb), or anything
+    # that needs today's internet: the rest of the sentence is the question.
+    m = re.search(r"\b(?:google|gemini)\b\W*(?:for\s+|about\s+)?(.+)", t, re.I)
+    if m: return {"action": "ask_google", "query": m.group(1)}
+    if re.search(r"\b(?:weather|forecast|news|traffic|score)\b", t, re.I): return {"action": "ask_google", "query": t}
+    m = re.search(r"\blights?\b.*\b(on|off)\b|\b(on|off)\b.*\blights?\b", t, re.I)
+    if m: return {"action": "light", "on": (m.group(1) or m.group(2)).lower() == "on"}
+    return {"action": "unclear"}
+
+def local_answer(text):
+    r = ollama("/api/chat", {"model": LLM_MODEL, "stream": False, "keep_alive": -1, **NO_THINK,
+                             "options": {"temperature": 0.3, "num_predict": 120},
+                             "messages": [{"role": "system", "content": "You are a car's voice assistant. Answer in one or two short spoken sentences. No lists or symbols."},
+                                          {"role": "user", "content": text}]}, timeout=30)
+    return r["message"]["content"].strip()
+
+# ---------- actions ----------
+def handle(s, pcm):
+    status("Thinking...", "", "fg", 30000)
+    text = transcribe(pcm)
+    if not current(s): return
+    if not text:
+        return say(s, "Sorry, I didn't catch that.", "Sorry", "Didn't catch that. Press the button and try again.", "warn")
+    status("Heard", text, "fg", 30000)
+    intent = understand(text)
+    if not current(s): return
+    act = intent.get("action")
+    if act == "send_message": send_message(s, intent)
+    elif act == "ask_google": ask_google(s, intent.get("query") or text)
+    elif act == "light":
+        on = bool(intent.get("on"))
+        client.publish("car/atech/light", json.dumps({"on": on}))
+        say(s, f"Light {'on' if on else 'off'}.", f"Light {'on' if on else 'off'}", "", "ok")
+    elif act == "answer":
+        reply = (intent.get("reply") or "").strip() or local_answer(text)
+        say(s, reply, "Answer", reply, "fg")
+    else:
+        say(s, "Sorry, I didn't understand. You can say: send a message to mom, or ask Google.", "Sorry", "Didn't understand: " + text, "warn")
+
+def resolve_contacts(to):
+    to = [str(w).lower() for w in to or []]
+    if any(w in ("all", "both", "everyone", "family") for w in to): return ["all"], []
+    return to, [w for w in to if w not in CONTACTS]
+
+def hub_send(to, msg):
+    # Text to contacts through hub.py's Telegram bots. Returns (ok, reason).
+    mid = uuid.uuid4().hex[:8]
+    client.publish("car/voice/send", json.dumps({"id": mid, "to": to, "text": msg}), qos=1)
+    with lock:
+        send_done.wait_for(lambda: mid in send_results, timeout=40)
+        r = send_results.pop(mid, None)
+    if not r: return False, "the hub didn't answer, so it may not have gone out"
+    return r.get("status") == "sent", r.get("reason") or ""
+
+def send_message(s, intent):
+    msg = (intent.get("text") or "").strip()
+    to, unknown = resolve_contacts(intent.get("to"))
+    if not msg or not to or unknown:
+        who = " or ".join(CONTACTS) or "mom or dad"
+        return say(s, f"Who should I send it to? You can say {who}.", "Who to?", f"Contacts: {who}", "warn")
+    names = "everyone" if to == ["all"] else " and ".join(to)
+    status("Sending...", f"To {names}: {msg}", "fg", 45000)
+    ok, reason = hub_send(to, msg)
+    if ok: say(s, f"Sent to {names}.", "Sent", f"To {names}: {msg}", "ok")
+    else: say(s, "I couldn't send it. " + reason, "Failed", reason, "alert")
+
+def phone_location():
+    # Last phone position the hub saved, if it's recent enough to mean "here".
+    try: f = json.loads(HUB_STATE.read_text()).get("fix")
+    except Exception: return None
+    if not f: return None
+    live = f.get("live_until", 0) > time.time()
+    return f if time.time() - f["tst"] <= (6 * 3600 if live else 1800) else None
+
+# ---------- Gemini: the online co-pilot ----------
+# One agent turn per request: Gemini gets Google Search and Google Maps grounding (with the car's
+# position) plus the car's own functions. It may chain them ("find an open pharmacy and text mom
+# I'm stopping there"); we run each function call and hand the result back until it answers.
+GEMINI_FUNCTIONS = [
+    {"name": "send_message", "description": "Send a text message from the driver to their contacts (via Telegram). Use the driver's own words in first person.",
+     "parameters": {"type": "object", "properties": {
+         "to": {"type": "array", "items": {"type": "string"}, "description": "Contact names, or [\"all\"] for everyone"},
+         "text": {"type": "string"}}, "required": ["to", "text"]}},
+    {"name": "set_light", "description": "Turn the car's cabin light on or off.",
+     "parameters": {"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}},
+    {"name": "cabin_status", "description": "What the in-car camera monitor (NVIDIA Nemotron) saw most recently: danger level, description, number of people, back-seat hand sign.",
+     "parameters": {"type": "object", "properties": {}}},
+]
+last_verdict = {}      # newest Nemotron verdict (watch_loop)
+
+def gemini_call(contents, system, loc):
+    tool_config = {"includeServerSideToolInvocations": True}
+    if loc: tool_config["retrievalConfig"] = {"latLng": {"latitude": loc["lat"], "longitude": loc["lon"]}}
+    body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "toolConfig": tool_config,
+            "tools": [{"google_search": {}}, {"google_maps": {}}, {"function_declarations": GEMINI_FUNCTIONS}]}
+    req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+                                 data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY})
+    with urllib.request.urlopen(req, timeout=45) as r: return json.load(r)
+
+def run_function(name, args):
+    if name == "send_message":
+        to, unknown = resolve_contacts(args.get("to"))
+        if not to or unknown: return {"ok": False, "error": f"unknown contact; known: {CONTACTS} or all"}
+        status("Sending...", f"To {' and '.join(to)}: {args.get('text', '')}", "fg", 45000)
+        ok, reason = hub_send(to, str(args.get("text", "")))
+        return {"ok": ok, "error": reason} if not ok else {"ok": True, "sent_to": to}
+    if name == "set_light":
+        client.publish("car/atech/light", json.dumps({"on": bool(args.get("on"))}))
+        return {"ok": True, "light_on": bool(args.get("on"))}
+    if name == "cabin_status":
+        if not last_verdict: return {"ok": False, "error": "the camera monitor has no verdict yet"}
+        v = dict(last_verdict); v["seconds_ago"] = round(time.time() - v.pop("captured_at", time.time()))
+        return {"ok": True, **v}
+    return {"ok": False, "error": f"no function {name}"}
+
+def ask_google(s, query):
+    if not GEMINI_KEY:
+        return say(s, "Google isn't set up yet. Add a Gemini API key to the hub's secrets.", "No Google key",
+                   "Add gemini_api_key to jetson-hub/secrets.json", "alert")
+    status("Asking Google", query, "fg", 45000)
+    say(s, "One moment.", "Asking Google", query, "fg")      # a tool chain can take a while: no silent wait
+    loc = phone_location()
+    where = (" Google Maps already knows the car's position: for anything near 'here' or 'me', query Maps directly"
+             " (e.g. 'pharmacy near me'); never search the web for coordinates." if loc else " The car's position is unknown.")
+    system = ("You are the co-pilot voice assistant in a car, talking to the driver. Use Google Search for current facts and "
+              "Google Maps for places, opening hours, distances and routes. Use the car's functions when the driver asks for an "
+              f"action (contacts: {', '.join(CONTACTS) or 'mom, dad'}). Never invent results: if a tool failed, say so. "
+              "Your final answer is read aloud while driving: at most three short sentences, plain words, no lists, markdown, links or emoji. "
+              f"Now (UTC): {time.strftime('%A %d %B %Y, %H:%M', time.gmtime())}.{where}")
+    contents = [{"role": "user", "parts": [{"text": query}]}]
+    t = time.time(); answer = ""
+    try:
+        for step in range(5):
+            res = gemini_call(contents, system, loc)
+            content = (res.get("candidates") or [{}])[0].get("content") or {}
+            parts = content.get("parts") or []
+            calls = [p["functionCall"] for p in parts if "functionCall" in p]
+            for p in parts:
+                if "toolCall" in p: log("Gemini used", p["toolCall"].get("toolType"), p["toolCall"].get("args"))
+            if not calls:
+                answer = " ".join(p.get("text", "") for p in parts if "text" in p and not p.get("thought")).strip()
+                break
+            contents.append(content)                       # as returned: keeps tool calls and thought signatures
+            replies = []
+            for c in calls:
+                out = run_function(c.get("name"), c.get("args") or {})
+                log("Gemini called", c.get("name"), c.get("args"), "->", out)
+                replies.append({"functionResponse": {"name": c.get("name"), "id": c.get("id"), "response": out}})
+            contents.append({"role": "user", "parts": replies})
+            if not current(s): return
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:300]
+        log("Gemini error", e.code, detail)
+        quota = e.code == 429 or "quota" in detail.lower() or "billing" in detail.lower()
+        return say(s, "Google is out of credit right now." if quota else "Google didn't answer. " + ("The API key was refused." if e.code in (401, 403) else ""),
+                   "Google error", f"HTTP {e.code}" + (": quota or credits" if quota else ""), "alert")
+    except OSError as e:
+        log("Gemini unreachable:", e)
+        return say(s, "I can't reach Google right now. Is the car online?", "Offline", str(e)[:100], "alert")
+    answer = re.sub(r"[*_#`]|\[\d+\]", "", answer)
+    log(f"Gemini answered in {time.time() - t:.1f}s: {answer!r}")
+    if not answer: return say(s, "Google had no answer for that.", "No answer", query, "warn")
+    say(s, answer, "Google", answer, "fg")
+
+# ---------- text to speech, streamed to the board's speaker ----------
+def say(s, text, title, body, color):
+    if not current(s): return
+    log("saying:", text)
+    status(title, body, color, 15000)
+    if piper is None: return
+    import soxr
+    q = queue.Queue(maxsize=8)
+    def synth():
+        try:
+            for chunk in piper.synthesize(text):
+                if not current(s): break
+                q.put(soxr.resample(chunk.audio_int16_array, chunk.sample_rate, SR).astype("<i2").tobytes())
+        except Exception as e: log("text-to-speech failed:", e)
+        finally: q.put(None)
+    threading.Thread(target=synth, daemon=True).start()
+    start, sent = None, 0.0
+    while (pcm := q.get()) is not None:
+        # If the next sentence took longer to make than the board had buffered, the speaker
+        # ran dry: restart the clock from now so the lead is rebuilt instead of overflowing it.
+        start = max(start, time.monotonic() - sent) if start else time.monotonic()
+        for i in range(0, len(pcm), PCM_CHUNK):
+            if not current(s): return                         # a new press interrupts the answer
+            ahead = sent - (time.monotonic() - start)
+            if ahead > PLAY_LEAD_S: time.sleep(ahead - PLAY_LEAD_S)
+            part = pcm[i:i + PCM_CHUNK]
+            client.publish("car/atech/voice/pcm", part)
+            sent += len(part) / 2 / SR
+
+# ---------- Nemotron: watch the cabin for danger near the driver ----------
+# One request in flight at a time: fetch the newest frame from vision.py only when the previous
+# answer is back (the shared endpoint can take a minute per call). A "danger" verdict goes to the
+# hub on car/vision/threat, which alerts the contacts silently like SOS (no sound or screen in the
+# car: an attacker mustn't learn that help was called). Every verdict is also published, retained,
+# on car/vision/nemotron, so the demo can show what Nemotron sees.
+WATCH_PROMPT = """You are the safety monitor of a car. The images are frames from a camera inside the car (their order is given below).
+Answer two separate questions.
+
+1. "level": is anyone near the driver attacking the driver or taking control of the car?
+"danger" = clearly happening now: a weapon (knife, gun, bottle raised to strike); hitting, choking or physically restraining the driver; grabbing the steering wheel, gear lever or handbrake. This silently alerts the driver's family, so use it only for these.
+"watch" = risky but not an attack: something blocking the driver's view or covering their eyes or face, objects thrown, a scuffle starting, a hand moving toward the wheel.
+"none" = everything else: talking, eating, phones, normal gestures, sleeping, empty seats, a blurry or dark frame.
+"what" = one short factual sentence of what you see (empty if none).
+
+2. "instruction": is someone in the BACK seat making one of these hand signs to the driver? Ignore the driver and the front passenger.
+- volume_down: flat hand, palm down, pressed downward
+- volume_up: flat hand, palm up, lifted upward
+- slower: flat hand, palm facing the front seats, held still like a stop sign
+- faster: hand rolling forward in small circles
+- thank_you: fingertips of a flat hand touching the chin, or moving forward and down from it
+- need_break: both hands forming a T (time-out)
+- all_good: thumbs up
+Use "none" unless the sign is clear.
+
+Answer with JSON only: {"level": "none"|"watch"|"danger", "what": "...", "people": <number of people visible>, "instruction": "<one id above or none>"}"""
+GESTURES = {"volume_down": "Could you turn the volume down, please?", "volume_up": "Could you turn the volume up, please?",
+            "slower": "Could you slow down, please?", "faster": "Could you go a bit faster?", "thank_you": "Thank you!",
+            "need_break": "Can we stop for a break soon?", "all_good": "All good back here."}
+WATCH_SCHEMA = {"type": "object", "properties": {"level": {"type": "string", "enum": ["none", "watch", "danger"]},
+                "what": {"type": "string"}, "people": {"type": "integer"},
+                "instruction": {"type": "string", "enum": ["none", *GESTURES]}}, "required": ["level", "what", "people", "instruction"]}
+MAX_FRAME_AGE_S = 10
+HUB_LEVEL = {"none": "low", "watch": "medium", "danger": "high"}   # hub.py alerts on "high" only
+
+def speak_aside(text, title):
+    # Say something that isn't an answer to a press (a back-seat sign), unless the driver is
+    # talking to the car right now. It becomes the current "session", so a press interrupts it.
+    global session
+    with lock:
+        if session and session["listening"]: return False
+        s = session = {"id": "aside", "sid": None, "chunks": {}, "listening": False, "started": time.time()}
+    say(s, text, title, text, "fg")
+    return True
+
+def nemotron(content, max_tokens=300, schema=None):
+    body = {"model": NEMOTRON_MODEL, "max_tokens": max_tokens, "temperature": 0, "messages": [{"role": "user", "content": content}],
+            "chat_template_kwargs": {"enable_thinking": False}}      # a verdict, not an essay: answer directly
+    if schema: body["response_format"] = {"type": "json_schema", "json_schema": {"name": "verdict", "schema": schema}}
+    req = urllib.request.Request(NEMOTRON_URL + "/chat/completions", data=json.dumps(body).encode(),
+                                 headers={"Authorization": "Bearer " + VERDA_KEY, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=240) as r: res = json.load(r)
+    return res["choices"][0]["message"].get("content") or ""
+
+WATCH_FRAMES, WATCH_SPAN_S, WATCH_WIDTH = 3, 1.5, 640    # a short burst shows movement (a hand reaching for the wheel)
+
+def shrink(jpg):
+    # 1280x720 -> 640 px wide, ~30 KB: a quarter of the upload over the hotspot and fewer image tokens.
+    import io
+    from PIL import Image
+    im = Image.open(io.BytesIO(jpg)); im.thumbnail((WATCH_WIDTH, WATCH_WIDTH))
+    out = io.BytesIO(); im.convert("RGB").save(out, "JPEG", quality=75); return out.getvalue()
+
+def camera_frames():
+    # vision.py's newest frames, oldest first. Falls back to the single newest photo.
+    import base64
+    try:
+        with urllib.request.urlopen(f"{VISION_URL}/frames?n={WATCH_FRAMES}&span={WATCH_SPAN_S}", timeout=5) as r:
+            fr = json.load(r)["frames"]
+        if fr: return [shrink(base64.b64decode(f["jpeg_b64"])) for f in fr], float(fr[-1]["captured_at"])
+    except urllib.error.HTTPError as e:
+        if e.code == 503: raise
+    with urllib.request.urlopen(VISION_URL + "/photo.jpg", timeout=5) as r:
+        return [shrink(r.read())], float(r.headers.get("X-Captured-At") or time.time())
+
+def watch_loop():
+    import base64
+    if not VERDA_KEY:
+        log("Nemotron off: no VERDA_INFERENCE_KEY"); return
+    camera_off = False
+    prev_gesture, spoken_gesture = "none", None
+    while True:
+        try:
+            try: frames, captured = camera_frames()
+            except (urllib.error.HTTPError, OSError) as e:
+                if not camera_off: log("Nemotron watch paused: no camera frame:", e)
+                camera_off = True; time.sleep(5); continue
+            if time.time() - captured > MAX_FRAME_AGE_S: time.sleep(2); continue
+            if camera_off: log("Nemotron watch: camera back"); camera_off = False
+            t = time.time()
+            intro = (f"{len(frames)} frames from the last {WATCH_SPAN_S} s, oldest first, newest last. Judge what is happening now"
+                     " (the newest frame), using the earlier ones to see movement." if len(frames) > 1 else "One frame.")
+            text = nemotron([{"type": "text", "text": WATCH_PROMPT + "\n\n" + intro},
+                             *({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(f).decode()}} for f in frames)],
+                            schema=WATCH_SCHEMA)
+            m = re.search(r"\{.*\}", text, re.S)
+            v = json.loads(m.group(0)) if m else {"level": "none", "what": "", "people": 0}
+            level = v.get("level") if v.get("level") in ("none", "watch", "danger") else "none"
+            took = time.time() - t
+            gesture = v.get("instruction") if v.get("instruction") in GESTURES else "none"
+            log(f"Nemotron ({took:.0f}s, frame {t - captured:.1f}s old): {level} {v.get('what', '')!r} people={v.get('people')} sign={gesture}")
+            verdict = {"level": HUB_LEVEL[level], "what": str(v.get("what", ""))[:200], "people": v.get("people"),
+                       "instruction": gesture, "captured_at": captured, "took_s": round(took, 1), "model": NEMOTRON_MODEL}
+            client.publish("car/vision/nemotron", json.dumps(verdict), qos=0, retain=True)
+            last_verdict.clear(); last_verdict.update(verdict)
+            if level == "danger":
+                client.publish("car/vision/threat", json.dumps(verdict), qos=1)   # hub alerts silently
+            # Back-seat sign: spoken after two identical replies in a row, then not again until it changes.
+            if gesture != "none" and gesture == prev_gesture and gesture != spoken_gesture:
+                if speak_aside("From the back seat: " + GESTURES[gesture], "Back seat"): spoken_gesture = gesture
+            if gesture == "none": spoken_gesture = None
+            prev_gesture = gesture
+        except Exception as e:
+            log("Nemotron watch error, retrying in 15 s:", repr(e)); time.sleep(15)
+
+client.on_connect = on_connect
+client.on_message = on_message
+while True:
+    try: client.connect(MQTT_HOST, 1883, 30); break
+    except Exception as e: log("waiting for broker:", e); time.sleep(2)
+client.loop_start()
+threading.Thread(target=udp_loop, daemon=True).start()
+threading.Thread(target=prepare_llm, daemon=True).start()
+threading.Thread(target=watch_loop, daemon=True).start()
+load_models()
+models_loaded.set()
+log("voice ready" + ("" if GEMINI_KEY else " (no Gemini key: 'ask Google' is off)"))
+while True: time.sleep(3600)

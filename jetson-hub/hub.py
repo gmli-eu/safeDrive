@@ -4,6 +4,7 @@
 # - "I'm ok" in the screen menu -> "I'm ok and I've arrived." + location to mom, dad or both.
 # - crash or flip detected by the board's orientation sensor, and the driver doesn't answer
 #   "ARE YOU OK?" within 10 s -> accident alert + live location to everyone.
+# - voice.py asks for a spoken message to be sent (car/voice/send) -> Telegram text to mom, dad or both.
 import json, math, os, pathlib, socket, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from concurrent.futures import ThreadPoolExecutor
 import paho.mqtt.client as mqtt
@@ -307,6 +308,29 @@ def send_checkin(to):
         log("check-in failed:", e)
         result(status="error", reason=str(e)[:80].replace('"', "'"))
 
+# ---------- scenario 5: voice message ("hey car, send a message to mom, ...") ----------
+def send_voice_message(req):
+    # From voice.py: {"id", "to": ["mom"] | ["all"], "text"}. Plain text, no location.
+    def result(**payload): publish("car/voice/send/result", {"id": req.get("id"), **payload})
+    try:
+        to = req.get("to") or []
+        targets = recipients(None if "all" in to else set(to))
+        if not targets: raise RuntimeError(f"No chat linked for {' and '.join(to)}: open the bot and tap Start")
+        text = "💬 From the driver: " + str(req.get("text") or "").strip()
+        errors = []
+        def send_one(target):
+            try: tg(target[0], "sendMessage", chat_id=target[1], text=text)
+            except Exception as e:
+                with lock: errors.append(str(e))
+        with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+            list(pool.map(send_one, targets))
+        log(f"voice message to {to} sent to {len(targets) - len(errors)}/{len(targets)} chats", errors or "")
+        if len(errors) == len(targets): raise RuntimeError("Telegram send failed")
+        result(status="sent")
+    except Exception as e:
+        log("voice message failed:", e)
+        result(status="error", reason=str(e)[:80])
+
 def update_live():
     global live
     with lock:
@@ -337,6 +361,7 @@ def on_connect(c, userdata, flags, rc, props=None):
 
 def on_message(c, userdata, m):
     global fix, last_threat
+    if m.topic.startswith("car/atech/voice/") or m.topic == "car/voice/send/result": return   # voice.py's (audio is binary)
     try: data = json.loads(m.payload.decode() or "null")
     except Exception: data = m.payload.decode(errors="replace")
     if m.topic.startswith("owntracks/"):
@@ -366,6 +391,8 @@ def on_message(c, userdata, m):
         threading.Thread(target=send_threat, args=(str(data.get("what", ""))[:200], at), daemon=True).start()
     elif m.topic == "car/atech/checkin" and isinstance(data, dict):
         threading.Thread(target=send_checkin, args=(data.get("to"),), daemon=True).start()
+    elif m.topic == "car/voice/send" and isinstance(data, dict):
+        threading.Thread(target=send_voice_message, args=(data,), daemon=True).start()
 
 # ---------- Telegram: link chats, answer /where, take live locations ----------
 def telegram_location(name, token, cid, msg, edited):

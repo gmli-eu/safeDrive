@@ -96,9 +96,16 @@ code:
       return e >= ACCIDENT_COUNTDOWN_MS ? 0 : (int)((ACCIDENT_COUNTDOWN_MS - e + 999) / 1000);
     }
 
+    // Not found at power-on (it can miss the first read right after a flash): retried every 5 s
+    // from the loop, so accident detection comes back on by itself instead of staying off.
+    unsigned long imuRetryAt = 0;
     void imuBaseline() {
       imuOk = imu.isConnected();
-      if (!imuOk) { logLine("imu: no orientation sensor on port 9, accident detection off"); return; }
+      if (!imuOk) {
+        if (!imuRetryAt) logLine("imu: no orientation sensor on port 9, accident detection off, retrying every 5 s");
+        imuRetryAt = millis() + 5000;
+        return;
+      }
       imu.setShakeThreshold(CRASH_G);
       delay(200);                            // let the 100 Hz task take its first readings
       float sx = 0, sy = 0, sz = 0;
@@ -590,6 +597,7 @@ code:
     }
 
     // Scenario 4: crash or flip -> "ARE YOU OK?" countdown; no knob press in 10 s -> alert.
+    if (!imuOk && (long)(millis() - imuRetryAt) >= 0) imuBaseline();
     AccidentKind detected = detectAccident();
     if (detected != ACC_NONE) startAccident(detected);
     bool knobPressed = knob.wasPressed();

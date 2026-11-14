@@ -1,4 +1,16 @@
 {
-  "model": { "name": "gemini-4-carbon" },
-  "security": { "auth": { "selectedType": "gemini-api-key" } }
+  "model": {
+    "name": "gemini-4-carbon"
+  },
+  "security": {
+    "auth": {
+      "selectedType": "gemini-api-key"
+    }
+  },
+  "context": {
+    "fileName": [
+      "AGENTS.md",
+      "GEMINI.md"
+    ]
+  }
 }

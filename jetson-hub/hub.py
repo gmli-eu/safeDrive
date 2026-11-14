@@ -44,6 +44,8 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 VERDICT_WINDOW = 60                          # seconds of Nemotron cabin verdicts kept in memory
 # Cabin climate: the Uno Q reads its Modulino Thermo (unoq-camera/thermo/) and serves it as JSON.
 CLIMATE_URL = os.environ.get("CLIMATE_URL", "http://172.20.10.4:8090/climate")
+# People in the cabin, counted on the Uno Q by an Edge Impulse model (unoq-camera/stream.py).
+OCCUPANCY_URL = os.environ.get("OCCUPANCY_URL", CLIMATE_URL.rsplit("/", 1)[0] + "/occupancy")
 HOT_CAR_C = float(os.environ.get("HOT_CAR_C", "35"))     # at or above: too hot, the driver is asked to turn on the AC
 COLD_CAR_C = float(os.environ.get("COLD_CAR_C", "0"))    # at or below: too cold, the heating
 CABIN_HOLD_S = float(os.environ.get("CABIN_HOLD_S", "30"))   # it must stay that hot or cold this long
@@ -61,6 +63,7 @@ state = {}
 fix_arrived = threading.Event()   # set on every new phone fix (see wait_for_fix)
 verdicts = collections.deque(maxlen=200)   # recent car/vision/nemotron dicts (last VERDICT_WINDOW s)
 climate = {}          # newest cabin reading: dict(celsius, humidity, at)
+occupancy = {}        # newest on-device person count: dict(people, empty_for_s, at)
 
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
 
@@ -477,13 +480,24 @@ def send_threat(what, at):
 # Heat (and cold) wears on a driver's attention, and hits children, older passengers and pets hardest.
 # When the cabin stays at or above HOT_CAR_C (or at or below COLD_CAR_C) for CABIN_HOLD_S, the car
 # says it once (voice.py) and the safeDrive page shows a banner while it lasts. car/cabin/comfort is
-# retained: {"state": "hot" | "cold" | "ok", "celsius": ...}. Only the people in the car are told.
-cabin = {"kind": None, "since": 0.0, "announced": None}
+# retained: {"state": "hot" | "cold" | "ok", "celsius": ...}. Only the people in the car are told,
+# and only while someone is in it: the Uno Q's on-device person detection decides (someone seen in
+# the last OCCUPIED_WINDOW s). If it can't tell (detector down, dark cabin), the warning goes out anyway.
+# While it lasts and someone is inside, the warning is repeated every CABIN_REMIND_S ("reminder": true).
+CABIN_REMIND_S = float(os.environ.get("CABIN_REMIND_S", "300"))
+cabin = {"kind": None, "since": 0.0, "announced": None, "announced_at": 0.0}
 
 def climate_text():
     c = climate
     if c.get("celsius") is None or time.time() - c.get("at", 0) > 120: return ""
     return f"{c['celsius']:.1f} °C, {c['humidity']:.0f} % humidity (Modulino Thermo)"
+
+OCCUPIED_WINDOW = 60
+
+def occupied():
+    o = occupancy
+    if o.get("people") is None or time.time() - o.get("at", 0) > 15: return True   # can't tell: assume someone
+    return o["people"] > 0 or o["empty_for_s"] + (time.time() - o["at"]) < OCCUPIED_WINDOW
 
 def check_cabin(celsius, humidity):
     now = time.time()
@@ -494,10 +508,33 @@ def check_cabin(celsius, humidity):
     if kind != cabin["kind"]:
         log(f"cabin {kind or 'back to normal'}: {celsius:.1f} °C, {humidity:.0f} %")
         cabin.update(kind=kind, since=now)
-    want = kind if kind and now - cabin["since"] >= CABIN_HOLD_S else None if kind else "ok"
+    want = (kind if now - cabin["since"] >= CABIN_HOLD_S and occupied() else None) if kind else "ok"
     if want and want != cabin["announced"]:
-        cabin["announced"] = want
+        cabin.update(announced=want, announced_at=now)
         publish("car/cabin/comfort", {"state": want, "celsius": celsius, "at": round(now)}, retain=True)
+    elif want in ("hot", "cold") and want == cabin["announced"] and now - cabin["announced_at"] >= CABIN_REMIND_S:
+        cabin["announced_at"] = now
+        log(f"cabin still {want}: {celsius:.1f} °C, reminding")
+        publish("car/cabin/comfort", {"state": want, "celsius": celsius, "at": round(now), "reminder": True}, retain=True)
+
+def occupancy_loop():
+    # Every 2 s: the Uno Q's on-device count -> car/cabin/occupancy (voice.py pauses the cloud cabin
+    # watch on it, the Gemini agent reads it). Not retained: it's only meaningful while fresh.
+    last_people, last_err = -1, None
+    while True:
+        try:
+            with urllib.request.urlopen(OCCUPANCY_URL, timeout=5) as r: d = json.load(r)
+            people = d.get("people")
+            occupancy.update(people=people, empty_for_s=float(d.get("empty_for_s") or 0), confidence=d.get("confidence"), at=time.time())
+            publish("car/cabin/occupancy", {"people": people, "empty_for_s": occupancy["empty_for_s"],
+                                            "confidence": d.get("confidence"), "error": d.get("error"), "at": round(time.time(), 1)})
+            if people != last_people: log("cabin occupancy (on-device):", people if people is not None else d.get("error"))
+            last_people, last_err = people, None
+        except Exception as e:
+            occupancy.update(people=None)
+            if str(e) != last_err: log("cabin occupancy unavailable:", e)
+            last_people, last_err = -1, str(e)
+        time.sleep(2)
 
 def climate_loop():
     # Polls the Uno Q every 5 s. car/cabin/climate (retained) feeds voice.py and the phone page.
@@ -644,7 +681,7 @@ def on_message(c, userdata, m):
             new_fix({"lat": data["lat"], "lon": data["lon"], "acc": data.get("acc"),
                      "tst": data.get("tst", time.time())}, "OwnTracks")
         return
-    if m.topic in ("car/hub/state", "car/cabin/climate", "car/cabin/comfort"): return   # our own
+    if m.topic in ("car/hub/state", "car/cabin/climate", "car/cabin/comfort", "car/cabin/occupancy"): return   # our own
     log("MQTT", m.topic, data)
     if m.topic == "car/atech/button" and isinstance(data, dict) and data.get("action") == "long_press" and data.get("id") == "sos":
         set_mode("alerting")
@@ -731,4 +768,5 @@ while True:
 if not BOTS: log("TELEGRAM_BOTS not set: Telegram disabled")
 for b in BOTS: threading.Thread(target=telegram_loop, args=(b,), daemon=True).start()
 threading.Thread(target=climate_loop, daemon=True).start()
+threading.Thread(target=occupancy_loop, daemon=True).start()
 client.loop_forever()

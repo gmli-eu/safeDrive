@@ -2,7 +2,8 @@
 #   python3 tools/deploy.py atech-flasher     (waits for "mqtt: connected" from every board it flashed)
 #   python3 tools/deploy.py jetson-hub        (waits for the hub's "MQTT connected")
 #   python3 tools/deploy.py unoq-camera       (copies the camera streamer to the Uno Q over SSH, and flashes
-#                                              the Thermo sketch to its microcontroller when the sketch changed)
+#                                              the Thermo sketch to its microcontroller when the sketch changed,
+#                                              and starts the on-device person detector)
 # jetson-hub refuses to deploy while an SOS/accident/threat alert is still being sent: a restart
 # kills the photo/clip upload. --check only runs that check; --force deploys anyway.
 import re
@@ -50,6 +51,17 @@ if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, r
         capture_output=True, text=True)
     print(r.stdout.strip(), r.stderr.strip()[-500:], flush=True)
     if r.returncode: sys.exit("thermo sketch build or flash failed")
+    # On-device person detection: Arduino's Edge Impulse model runner (from Arduino App Lab, already on
+    # the board) serving YOLOX-nano on 127.0.0.1:1340. Docker restarts it with the board.
+    runner = ("ghcr.io/arduino/app-bricks/ei-models-runner:0.5.0 --model-file /models/ootb/ei/yolo-x-nano.eim "
+              "--run-http-server 1337 --dont-print-predictions")
+    r = subprocess.run(ssh + [
+        "docker inspect -f '{{.State.Running}}' safedrive-people 2>/dev/null | grep -q true && echo 'person detector running' || "
+        "{ docker rm -f safedrive-people >/dev/null 2>&1; docker run -d --name safedrive-people --restart unless-stopped "
+        "--device /dev/dri:/dev/dri --group-add render -p 127.0.0.1:1340:1337 " + runner + " >/dev/null && "
+        "echo 'person detector started'; }"], capture_output=True, text=True)
+    print(r.stdout.strip(), r.stderr.strip()[-300:], flush=True)
+    if r.returncode: sys.exit("person detector failed to start")
     # sudo reads the password from the first line of stdin; the rest is the unit file.
     r = subprocess.run(ssh + ["sudo -S -p '' sh -c 'cat > /etc/systemd/system/safedrive-camera.service && "
                               "systemctl daemon-reload && systemctl enable -q safedrive-camera && "
@@ -70,7 +82,14 @@ if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, r
                 if climate["celsius"] is not None: break
                 time.sleep(1)
             print("climate:", climate)
-            sys.exit(0 if climate["celsius"] is not None else "FAILED: no reading from the Modulino Thermo")
+            if climate["celsius"] is None: sys.exit("FAILED: no reading from the Modulino Thermo")
+            for _ in range(30):   # the detector needs a few seconds after a fresh start
+                occ = json.load(urllib.request.urlopen(f"http://{host}:8090/occupancy", timeout=3))
+                if occ["people"] is not None or occ["error"] == "picture too dark to tell": break
+                time.sleep(1)
+            print("occupancy:", {k: occ[k] for k in ("people", "confidence", "ms", "error")})
+            sys.exit(0 if occ["people"] is not None or occ["error"] == "picture too dark to tell"
+                     else "FAILED: no answer from the on-device person detector")
     print("FAILED: no frames within 30 s", health)
     subprocess.run(ssh + ["journalctl -u safedrive-camera -n 20 --no-pager"])
     sys.exit(1)

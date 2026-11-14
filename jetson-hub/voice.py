@@ -261,7 +261,8 @@ def status(title, body="", color="fg", ms=8000, board=None):
 def on_connect(c, userdata, flags, rc, props=None):
     log("MQTT connected", rc)
     c.subscribe([("car/atech/voice/#", 0), ("car/passenger/voice/#", 0), ("car/voice/send/result", 1), ("car/translator", 1),
-                 ("car/cabin/climate", 0), ("car/cabin/comfort", 1)])
+                 ("car/cabin/climate", 0), ("car/cabin/comfort", 1),
+                 ("car/cabin/occupancy", 0)])
 
 def on_message(c, userdata, m):
     board = next((b for b, t in BOARD_TOPIC.items() if m.topic.startswith(t + "/")), None)
@@ -289,6 +290,8 @@ def on_message(c, userdata, m):
             elif s: s["listening"] = False
     elif m.topic == "car/translator" and isinstance(data, dict):
         if bool(data.get("on")) != translator["on"]: set_translator(bool(data.get("on")))
+    elif m.topic == "car/cabin/occupancy" and isinstance(data, dict):
+        cabin_people.clear(); cabin_people.update(data)
     elif m.topic == "car/cabin/climate" and isinstance(data, dict):
         cabin_climate.clear(); cabin_climate.update(data)
     elif m.topic == "car/cabin/comfort" and isinstance(data, dict):
@@ -775,6 +778,7 @@ def directions(s, place):
 
 # ---------- cabin climate: Modulino Thermo on the Uno Q, read by hub.py ----------
 cabin_climate = {}     # newest car/cabin/climate: {"celsius", "humidity", "at"}
+cabin_people = {}      # newest car/cabin/occupancy (Uno Q, on-device): {"people", "empty_for_s", "confidence", "at"}
 
 def climate_fresh():
     return cabin_climate.get("celsius") is not None and time.time() - float(cabin_climate.get("at") or 0) < 120
@@ -786,15 +790,35 @@ def climate_sentence():
             else "A bit cool." if c >= 10 else "Cold.")
     return f"It's {c:.0f} degrees in the car, {h:.0f} percent humidity. {feel}"
 
+CABIN_RETRY_S = 240    # how long a warning waits for the car to be free: less than the hub's 5 min reminder
+cabin_pending = {"n": 0}   # only the newest warning waits; an older one still waiting gives way
+
+def car_busy():
+    # The driver is talking to the car, an answer is playing, or a request is still being worked
+    # on (a slow "ask Google" can take ~25 s before it speaks): a warning now would cut it off.
+    with lock:
+        d = sessions.get("driver")
+        return bool((d and d["listening"]) or speaking["n"] or time.monotonic() < speaking["until"]
+                    or (d and d["id"] not in ("aside", "relay") and time.time() - d["started"] < 30))
+
 def cabin_warning(d):
-    # hub.py: the cabin has been too hot or too cold for a while. Said once, calmly, like a hand
-    # sign: no alarm sound, nothing to read on the screen beyond the usual status line.
+    # hub.py: the cabin has been too hot or too cold for a while (again every 5 min while it
+    # lasts). Said calmly, like a hand sign: no alarm sound, only the usual status line.
+    # If the car is busy, it waits until it's free (up to CABIN_RETRY_S), instead of being dropped.
     c, hot = d.get("celsius"), d.get("state") == "hot"
-    text = (f"It's getting {'hot' if hot else 'cold'} in here: {c:.0f} degrees. Please turn on the "
-            + ("air conditioning" if hot else "heating")
-            + ", especially with children, older passengers or pets on board.")
-    log("cabin comfort:", text)
-    speak_aside(text, "Too hot" if hot else "Too cold")
+    fix = ("Please turn on the " + ("air conditioning" if hot else "heating")
+           + ", especially with children, older passengers or pets on board.")
+    text = (f"Reminder: it's still {c:.0f} degrees in the car. " if d.get("reminder")
+            else f"It's getting {'hot' if hot else 'cold'} in here: {c:.0f} degrees. ") + fix
+    with lock: cabin_pending["n"] += 1; me = cabin_pending["n"]
+    deadline = time.time() + CABIN_RETRY_S
+    if car_busy(): log("cabin comfort: car busy, waiting to say it")
+    while time.time() < deadline:
+        if cabin_pending["n"] != me: return          # a newer warning took over
+        if not car_busy() and speak_aside(text, "Too hot" if hot else "Too cold"):
+            log("cabin comfort:", text); return
+        time.sleep(1)
+    log("cabin comfort: car busy for", CABIN_RETRY_S, "s, warning dropped (the banner still shows)")
 
 # ---------- Gemini: the online co-pilot ----------
 # One agent turn per request: Gemini gets Google Search and Google Maps grounding (with the car's
@@ -811,7 +835,7 @@ GEMINI_FUNCTIONS = [
      "parameters": {"type": "object", "properties": {
          "name": {"type": "string", "description": "The place's name as Google Maps lists it"},
          "address": {"type": "string", "description": "Its street address, with the city"}}, "required": ["name", "address"]}},
-    {"name": "cabin_status", "description": "What the in-car camera monitor (NVIDIA Nemotron) saw most recently: danger level, description, number of people, back-seat hand sign.",
+    {"name": "cabin_status", "description": "What the in-car camera monitor (NVIDIA Nemotron) saw most recently: danger level, description, number of people, back-seat hand sign; plus the number of people counted right now by the on-device person detector on the car's Arduino UNO Q.",
      "parameters": {"type": "object", "properties": {}}},
     {"name": "cabin_climate", "description": "The temperature (°C) and relative humidity (%) inside the car right now, from the car's own sensor (Arduino Modulino Thermo). Not the weather outside.",
      "parameters": {"type": "object", "properties": {}}},
@@ -857,8 +881,11 @@ def run_function(name, args, said="", board="driver"):
         if not climate_fresh(): return {"ok": False, "error": "the cabin temperature sensor has no recent reading"}
         return {"ok": True, "celsius": cabin_climate["celsius"], "humidity_percent": cabin_climate["humidity"]}
     if name == "cabin_status":
-        if not last_verdict: return {"ok": False, "error": "the camera monitor has no verdict yet"}
-        v = dict(last_verdict); v["seconds_ago"] = round(time.time() - v.pop("captured_at", time.time()))
+        v = dict(last_verdict)
+        if v: v["seconds_ago"] = round(time.time() - v.pop("captured_at", time.time()))
+        if cabin_people.get("people") is not None and time.time() - float(cabin_people.get("at") or 0) < 10:
+            v["people_now_on_device"] = cabin_people["people"]
+        if not v: return {"ok": False, "error": "the camera monitor has no verdict yet"}
         return {"ok": True, **v}
     return {"ok": False, "error": f"no function {name}"}
 
@@ -1247,6 +1274,16 @@ WATCH_FRAMES, WATCH_SPAN_S, WATCH_WIDTH = 3, 1.5, 640    # a short burst shows m
 # At most one request every WATCH_MIN_INTERVAL_S: when the endpoint answers in 1 s, unpaced requests
 # (3 frames each, ~100 KB/s up the hotspot) took the Wi-Fi from the speaker's audio.
 WATCH_MIN_INTERVAL_S = float(os.environ.get("WATCH_MIN_INTERVAL_S", "2"))
+# Two tiers: the Uno Q's on-device person detection (Edge Impulse) watches all the time; Nemotron is
+# asked at full rate while anyone might be in the car. Only after the Uno Q has seen nobody for
+# EMPTY_PAUSE_S does it drop to one check every WATCH_EMPTY_INTERVAL_S (fail-open: a person the small
+# model misses is still seen by Nemotron within that time, and a detector that's down changes nothing).
+EMPTY_PAUSE_S, WATCH_EMPTY_INTERVAL_S = 10, 15
+
+def cabin_empty():
+    o = cabin_people
+    if o.get("people") is None or time.time() - float(o.get("at") or 0) > 10: return False   # can't tell
+    return o["people"] == 0 and float(o.get("empty_for_s") or 0) + (time.time() - float(o["at"])) >= EMPTY_PAUSE_S
 
 def shrink(jpg):
     # 1280x720 -> 640 px wide, ~30 KB: a quarter of the upload over the hotspot and fewer image tokens.
@@ -1292,12 +1329,18 @@ def watch_loop():
     if not VERDA_KEY:
         log("Nemotron off: no VERDA_INFERENCE_KEY"); return
     recent_gestures, spoken_gesture = collections.deque(maxlen=3), None
-    last_ask = 0.0
+    last_ask, was_empty = 0.0, False
     while True:
         try:
-            while True:   # quiet while the car speaks, and paced
+            while True:   # quiet while the car speaks, paced, and slow while the Uno Q sees an empty cabin
                 with lock: busy = speaking["n"] or time.monotonic() < speaking["until"]
-                if not busy and time.monotonic() - last_ask >= WATCH_MIN_INTERVAL_S: break
+                empty = cabin_empty()
+                if empty != was_empty:
+                    was_empty = empty
+                    log(f"cabin empty (on-device): Nemotron every {WATCH_EMPTY_INTERVAL_S} s" if empty else
+                        "someone in the cabin (on-device): Nemotron back to full rate")
+                gap = WATCH_EMPTY_INTERVAL_S if empty else WATCH_MIN_INTERVAL_S
+                if not busy and time.monotonic() - last_ask >= gap: break
                 time.sleep(0.2)
             try: frames, captured = camera_frames()
             except (urllib.error.HTTPError, OSError) as e:

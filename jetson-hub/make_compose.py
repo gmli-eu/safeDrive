@@ -32,6 +32,7 @@ if secrets.get("gemini_model"): env["GEMINI_MODEL"] = secrets["gemini_model"]
 # The Uno Q serves the cabin climate (Modulino Thermo) next to the camera stream.
 camera_url = secrets.get("camera_url", "http://172.20.10.4:8090/stream.mjpg")
 env["CLIMATE_URL"] = secrets.get("climate_url", camera_url.rsplit("/", 1)[0] + "/climate")
+env["OCCUPANCY_URL"] = secrets.get("occupancy_url", camera_url.rsplit("/", 1)[0] + "/occupancy")
 for key in ("hot_car_c", "cold_car_c", "cabin_hold_s"):   # optional: lower the limits for a demo
     if key in secrets: env[key.upper()] = str(secrets[key])
 # voice.py is too big for one env var even compressed: split into VOICE_B64_0, _1, ... (joined at start).

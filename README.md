@@ -2,11 +2,11 @@
 
 **When you can't call for help, your car does.**
 
-**Team madpiece** · Junction 2026 · [Arduino Project Hub page](https://projecthub.arduino.cc/projects/f64f85a3-6f5f-4910-8ac1-9c4b1d8b2739/)
+**Team madpiece** · Junction 2026 · [Arduino Project Hub page](https://projecthub.arduino.cc/projects/f64f85a3-6f5f-4910-8ac1-9c4b1d8b2739/) · [Arduino UNO Q write-up](docs/ARDUINO.md)
 
 A crash, a medical emergency or a threatening passenger can leave a driver unable to reach their phone, and the people who care about them find out too late. safeDrive is an add-on that makes the car raise the alarm by itself. A hidden SOS button, a crash or rollover, or a threat spotted by the cabin camera sends the driver's chosen contacts, within seconds, a live location, a photo, a video clip of the moments before, and an AI incident report with the street address, the nearest emergency department and exactly what to tell `112`.
 
-Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant that runs offline sends messages, finds directions and answers questions. A back-seat intercom translates between passengers and the driver, down to their regional accent. Passengers can ask for a break or a slower ride with a simple hand sign.
+Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant that runs offline sends messages, finds directions and answers questions. A back-seat intercom translates between passengers and the driver, down to their regional accent. Passengers can ask for a break or a slower ride with a simple hand sign. An AI model on the Arduino UNO Q itself knows who's in the car, offline, and the car asks for the AC or the heating when the cabin gets too hot or cold.
 
 <p align="center">
   <img src="docs/images/car-setup.jpg" alt="Illustration of safeDrive in a car: the Jetson, the Arduino UNO Q and its camera on the dashboard, the driver's Atech board on the centre console, and the back-seat Atech board on the back of the passenger seat" width="320">
@@ -22,6 +22,7 @@ Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant
 - **SOS button**: hold it for 2 s. Discreet: no sound, only two brief amber flashes when the alert goes out. ([details](docs/FEATURES.md#sos-button-port-6))
 - **Accident detection**: a crash (jolt over 2.5 g) or a rollover (tilted over 75° for 3 s) starts a 10 s "Are you OK?" countdown on the screen. If nobody presses the knob to cancel, the alert goes out. ([details](docs/FEATURES.md#accident-detection-orientation-sensor-on-port-9))
 - **Threat in the cabin**: Nemotron watches the camera and silently alerts the driver's contacts to a weapon, someone hitting or restraining the driver, or someone grabbing the wheel, gear lever or handbrake. ([details](docs/FEATURES.md#cabin-watch-nvidia-nemotron-35-super-vl))
+- **Who's in the car, worked out on the Arduino**: an Edge Impulse model on the UNO Q counts the people in the cabin about once a second, offline, and draws them on the camera's live view. In an empty car, the cloud cabin watch slows to one check every 15 s; it never slows down while someone might be inside. ([details](docs/FEATURES.md#camera-arduino-uno-q--arduino-usb-camera))
 - **AI incident report**: Gemini describes the clip, gives the street address, finds the nearest emergency department with Google Maps and writes what to say to `112`. ([details](docs/FEATURES.md#incident-report))
 - **Last known position**: if the phone has gone quiet, alerts still send its last position (up to 24 h old), clearly marked as old.
 
@@ -31,7 +32,7 @@ Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant
 - Turn the cabin light on or off.
 - Directions: puts a **Go to ...** button on the driver's phone that opens Google Maps or Waze.
 - Quick facts, jokes and small talk from Gemma 4, running offline in the car.
-- **Too hot or too cold inside**: a Modulino Thermo on the UNO Q measures the cabin. When it stays at 35 °C or more (or 0 °C or less) for 30 s, the car asks the driver to turn on the AC (or the heating), especially with children, older passengers or pets on board, and the safeDrive page shows a calm red banner. ([details](docs/FEATURES.md#too-hot-or-too-cold-inside-modulino-thermo-on-the-uno-q))
+- **Too hot or too cold inside**: a Modulino Thermo on the UNO Q measures the cabin. When it stays at 35 °C or more (or 0 °C or less) for 30 s and someone is in the car, the car asks the driver to turn on the AC (or the heating), especially with children, older passengers or pets on board, with a reminder every 5 minutes while it lasts. It never talks over the driver: if the car is busy, the warning waits. The safeDrive page shows a calm red banner. ([details](docs/FEATURES.md#too-hot-or-too-cold-inside-modulino-thermo-on-the-uno-q))
 - "Ask Google ...": a Gemini agent with Google Search, Google Maps and the car's own functions, chained in one request ("find the nearest open pharmacy and text mum I'm stopping there").
 
 **Back seat**
@@ -57,14 +58,14 @@ We demoed the SOS button, accident detection and the AI incident reports to seve
 | NVIDIA Jetson Orin Nano (from Wendy, running WendyOS) | The car's brain: MQTT broker, alerts, Gemma 4, Whisper and Piper, camera buffer |
 | Atech 14-port board (ESP32-S3), driver | Screen, knob, SOS and voice buttons, mic, speaker, light, orientation sensor |
 | Atech 14-port board (ESP32-S3), back seat | Button, mic and speaker for the intercom and translator |
-| Arduino UNO Q + Arduino USB Camera + Modulino Thermo | Cabin camera, streamed over Wi-Fi; cabin temperature and humidity |
+| Arduino UNO Q + Arduino USB Camera + Modulino Thermo | Cabin camera, streamed over Wi-Fi; people in the cabin, counted on the device (Edge Impulse); cabin temperature and humidity |
 | iPhone | Wi-Fi hotspot, location, and the safeDrive page in the phone holder |
 
 ## Privacy
 
 - **Your voice never leaves the car by default.** Speech-to-text (Whisper), the assistant's understanding and answers (Gemma 4) and its voice (Piper) all run locally on the Jetson, with no cloud service involved: they keep working with no internet connection at all.
 - What someone says goes to Gemini only when they say "Google" (or "Gemini"), or while the driver has the translator on.
-- Camera frames go to Nemotron on Verda for the cabin watch. A clip and the location go to Gemini only when an SOS, accident or threat alert fires.
+- Camera frames go to Nemotron on Verda for the cabin watch. In an empty parked car, far fewer do: the UNO Q's on-device person detection, which never sends anything out, slows the cloud watch to one check every 15 s. A clip and the location go to Gemini only when an SOS, accident or threat alert fires.
 - Camera frames are kept in RAM only, for the last 40 s.
 - The cabin temperature stays in the car. It only goes out inside an incident report, after an SOS, accident or threat alert.
 
@@ -111,12 +112,16 @@ Challenge requirements are in [HACKATHON.md](HACKATHON.md). Each section lists t
 
 ### Best use of Arduino UNO Q
 
+The full write-up for the Arduino team, with the architecture, the demo and what we measured, is in [docs/ARDUINO.md](docs/ARDUINO.md).
+
 - The **Arduino UNO Q** with the **Arduino USB Camera** is the car's camera node. It joins the hotspot on its own and runs `unoq-camera/stream.py` as a systemd service (`unoq-camera/safedrive-camera.service`).
-- `stream.py` finds the camera (`find_camera`) and serves its own JPEGs at 1280×720, 15 fps (`/stream.mjpg`, `/frame.jpg`, `/preview.mjpg`). It reports `/health`, including when the picture is dark, recovers from stuck auto-exposure (`kick_exposure`), and serves a live view with the hand-sign guide (`unoq-camera/icons/`).
+- `stream.py` finds the camera (`find_camera`) and serves its own JPEGs at 800×600, 10 fps (`/stream.mjpg`, `/frame.jpg`, `/preview.mjpg`). It reports `/health`, including when the picture is dark, recovers from stuck auto-exposure (`kick_exposure`), and serves a live view with the hand-sign guide (`unoq-camera/icons/`).
 - Its frames feed every AI feature that needs vision: Nemotron's cabin watch and hand signs (`watch_loop` in `jetson-hub/voice.py`), the alert photo and clip (`jetson-hub/vision.py`) and Gemini's incident report (`describe_clip` in `jetson-hub/hub.py`).
 - A **Modulino Thermo** on the UNO Q's Qwiic connector measures the cabin. Both halves of the board are used: the sketch `unoq-camera/thermo/thermo.ino` runs on the STM32 microcontroller, reads the sensor every 2 s and offers `thermo_read` through the Arduino router (`Arduino_RouterBridge`). On the Linux side, `climate_loop` in `stream.py` calls it over the router's socket and serves `/climate`. `tools/deploy.py unoq-camera` builds and flashes the sketch on the board itself whenever it changes.
 - The cabin temperature drives the too hot / too cold warning and banner (`check_cabin` in `jetson-hub/hub.py`, `cabin_warning` in `voice.py`), goes into every incident report, shows on the safeDrive page, and answers "how warm is it in the car?" (`climate_sentence` in `jetson-hub/voice.py`, and the Gemini function `cabin_climate`).
-- The AI models run on the Jetson and on Verda, not on the UNO Q itself.
+- **Edge AI on the UNO Q: on-device person detection.** Arduino's Edge Impulse model runner (the `ei-models-runner` container from Arduino App Lab, started by `tools/deploy.py`) runs the YOLOX-nano detector from Arduino's model list on the UNO Q, on the camera's own frames. `occupancy_loop` in `stream.py` sends it the newest frame about once a second: about 0.5 s per frame, about 180 MB of RAM, fully offline, while the camera keeps streaming. It serves the people count at `/occupancy`, and the UNO Q's live view draws the boxes ("person 0.86").
+- **Two tiers of AI**: the UNO Q watches occupancy all the time, on the device; Nemotron in the cloud does the heavy reasoning (threats, hand signs) while someone might be in the car. Only after the UNO Q has seen an empty cabin for 10 s does the cloud watch slow to one check every 15 s (`cabin_empty` in `jetson-hub/voice.py`). It's fail-open: if the detector misses someone, Nemotron still looks within 15 s, and if the detector is down or the cabin is too dark to tell, nothing changes. The too hot / too cold warning only speaks when the UNO Q has seen someone in the last minute, or can't tell (`occupied` in `jetson-hub/hub.py`). The Gemini agent's `cabin_status` includes the on-device count.
+- Gemma 4, Whisper and Piper run on the Jetson; Nemotron runs on Verda.
 
 ### Verda Compute Track
 
@@ -129,7 +134,7 @@ Challenge requirements are in [HACKATHON.md](HACKATHON.md). Each section lists t
     3. **Hand signs** (`Improve hand signs, audio and the camera page`): a `hands` field that makes the model describe the hands across all frames before it names a sign. Voting adapts to the endpoint's speed.
     4. **Robustness**: when the endpoint is busy or fails, the watch retries after 15 s instead of stopping.
     5. **Sharing the hotspot**: once the endpoint answered in about 1 s, the watch sent 55-77 requests a minute and the car's speech broke up. It now sends at most one every 2 s (`WATCH_MIN_INTERVAL_S`) and nothing while the car speaks: about 28 a minute.
-- **Path to scale**: each car sends at most one small request every 2 s and nothing while the camera can't see, so load grows linearly with the number of cars on the road. A fleet would move to Verda's auto-scaling containers, with a smaller model on the car's Jetson as an offline fallback. The same endpoint can serve taxis, school buses and delivery fleets, with all cabin video staying in Europe.
+- **Path to scale**: each car sends at most one small request every 2 s, one every 15 s while the UNO Q's on-device detector sees an empty cabin, and nothing while the camera can't see, so load grows linearly with the number of cars on the road. A fleet would move to Verda's auto-scaling containers, with a smaller model on the car's Jetson as an offline fallback. The same endpoint can serve taxis, school buses and delivery fleets, with all cabin video staying in Europe.
 
 ### Atech Real World Challenge
 
@@ -161,7 +166,8 @@ Measured on the hardware on 14 November 2026, in the middle of Junction 2026. Th
 | Translating one turn, either direction (Gemini) | Cloud | 2.7-3.5 s |
 | "Ask Google" with a web search (Gemini agent) | Cloud | about 10 s |
 | AI incident report after an alert (Gemini, Maps, OpenStreetMap) | Cloud | about 10-15 s |
-| One cabin-watch verdict (Nemotron on Verda) | Cloud | a few seconds when the shared endpoint isn't busy |
+| Counting the people in the cabin (Edge Impulse YOLOX-nano) | UNO Q, offline | about 0.5 s per frame |
+| One cabin-watch verdict (Nemotron on Verda) | Cloud | about 1 s when the shared endpoint isn't busy, longer when it is |
 
 ## Next steps
 
@@ -177,7 +183,7 @@ Measured on the hardware on 14 November 2026, in the middle of Junction 2026. Th
 ## Design choices and known limits
 
 - **A person decides to call 112.** Nothing calls emergency services automatically: the alert and incident report give the driver's contacts what they need to make the call, so a false alarm never sends an ambulance.
-- The camera has no infrared: in a dark cabin, Nemotron isn't asked and the driver's screen shows a crossed-out camera icon.
+- The camera has no infrared: in a dark cabin, Nemotron isn't asked, the driver's screen shows a crossed-out camera icon, and the UNO Q's person detection reports "can't tell" (never "empty").
 - "Ask Google", the translator and the incident report need the internet; with no `gemini_api_key`, the rest still works.
 - The safeDrive page can't keep the iPhone's screen on by itself (Auto-Lock must be set to Never), and it can only open Google Maps or Waze from a tap.
 

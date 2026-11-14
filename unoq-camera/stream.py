@@ -6,8 +6,9 @@
 #   GET /health        JSON: fps, age of the newest frame, camera, size, dark (frames near-black)
 #   GET /icons/*.png   hand-sign guide icons shown in the live view's menu
 #   GET /climate       JSON: cabin temperature and humidity from the Modulino Thermo (see thermo/)
+#   GET /occupancy     JSON: people in the cabin, counted on this board by an Edge Impulse model
 # Every frame carries X-Captured-At-Unix-Ns, as Wendy's camera sharing expects.
-import glob, json, os, pathlib, socket, struct, subprocess, threading, time
+import glob, json, os, pathlib, socket, struct, subprocess, threading, time, urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 WIDTH, HEIGHT = int(os.environ.get("WIDTH", 1280)), int(os.environ.get("HEIGHT", 720))
@@ -153,6 +154,59 @@ def climate_loop():
             last_error = str(e)
         time.sleep(2)
 
+# ---------- on-device person detection: Edge Impulse YOLOX-nano on this board ----------
+# Arduino's Edge Impulse model runner (the ei-models-runner container from Arduino App Lab, started by
+# tools/deploy.py as "safedrive-people") serves YOLOX-nano on 127.0.0.1:1340. About once a second the
+# newest camera frame goes to it (~0.5 s per frame, offline). Nothing leaves the board.
+# "empty" is only claimed when frames keep coming back without anyone: the Jetson pauses the cloud
+# cabin watch only after EMPTY_FOR_S of that (fail-open: a missed detection costs little).
+DETECT_URL = os.environ.get("DETECT_URL", "http://127.0.0.1:1340/api/image")
+PERSON_MIN = float(os.environ.get("PERSON_MIN", "0.5"))   # a box this sure counts as a person
+occupancy = {"people": None, "confidence": 0.0, "boxes": [], "at": 0.0, "empty_since": None,
+             "ms": None, "error": "no detection yet"}
+
+def detect(jpg):
+    boundary = "sd" + os.urandom(8).hex()
+    body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"f.jpg\"\r\n"
+            "Content-Type: image/jpeg\r\n\r\n").encode() + jpg + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(DETECT_URL, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=10) as r: return json.load(r)["result"]
+
+def occupancy_loop():
+    last_error, last_people = None, -1
+    while True:
+        t0 = time.time()
+        try:
+            with cond: jpg, ns = latest["jpg"], latest["ns"]
+            if not jpg or time.time_ns() - ns > MAX_AGE * 1e9: raise RuntimeError("no recent frame")
+            if stats["dark"]: raise RuntimeError("picture too dark to tell")   # unknown, never "empty"
+            res = detect(jpg)
+            w, h = res["resized"]["originalWidth"], res["resized"]["originalHeight"]
+            boxes = [{"label": b["label"], "conf": round(b["value"], 2),   # 0-1, relative to the frame
+                      "x": round(b["x"] / w, 3), "y": round(b["y"] / h, 3), "w": round(b["width"] / w, 3), "h": round(b["height"] / h, 3)}
+                     for b in res["bounding_boxes"] if b["label"] == "person"]
+            people = sum(b["conf"] >= PERSON_MIN for b in boxes)
+            now = time.time()
+            occupancy.update(people=people, confidence=max([b["conf"] for b in boxes], default=0.0), boxes=boxes, at=now,
+                             ms=round((now - t0) * 1000), error=None,
+                             empty_since=None if boxes else (occupancy["empty_since"] or now))   # any person box, even unsure, isn't empty
+            if last_error: log("person detection back")
+            if people != last_people: log(f"on-device: {people} {'person' if people == 1 else 'people'} ({(now - t0):.2f}s)")
+            last_error, last_people = None, people
+        except Exception as e:
+            occupancy.update(people=None, boxes=[], empty_since=None, error=str(e)[:120])
+            if str(e) != last_error: log("person detection:", e)
+            last_error, last_people = str(e), -1
+        time.sleep(max(0.2, 1.0 - (time.time() - t0)))
+
+def occupancy_json():
+    o, now = occupancy, time.time()
+    fresh = o["people"] is not None and now - o["at"] < 10
+    return {"people": o["people"] if fresh else None, "confidence": o["confidence"] if fresh else None,
+            "empty_for_s": round(now - o["empty_since"], 1) if fresh and o["empty_since"] else 0.0,
+            "boxes": o["boxes"] if fresh else [], "ms": o["ms"], "model": "Edge Impulse YOLOX-nano (on-device)",
+            "error": None if fresh else (o["error"] or "detection too old")}
+
 ICON_DIR = pathlib.Path(__file__).resolve().parent / "icons"
 ICONS = {p.name: p.read_bytes() for p in ICON_DIR.glob("*.png")} if ICON_DIR.is_dir() else {}
 
@@ -168,6 +222,11 @@ PAGE = """<!doctype html>
   body { display:flex; height:100dvh; }
   .stage { flex:1; min-width:0; position:relative; display:flex; align-items:center; justify-content:center; background:#000; }
   .feed { width:100%; height:100%; object-fit:contain; display:block; }
+  .boxes { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .edge { position:absolute; left:14px; bottom:max(14px, env(safe-area-inset-bottom)); z-index:10; padding:8px 13px;
+    border-radius:999px; background:rgba(11,15,20,.82); border:1px solid rgba(255,255,255,.16); font-size:13px;
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+  .edge b { color:#4ade80; }
   .menu-btn { position:absolute; top:max(14px, env(safe-area-inset-top)); right:14px; z-index:10;
     display:inline-flex; align-items:center; gap:8px; padding:10px 15px; border-radius:999px;
     border:1px solid rgba(255,255,255,.16); background:rgba(11,15,20,.82); color:var(--fg);
@@ -209,6 +268,8 @@ PAGE = """<!doctype html>
 <body>
   <div class="stage">
     <img class="feed" id="feed" src="/preview.mjpg" alt="SafeDrive live camera">
+    <canvas class="boxes" id="boxes"></canvas>
+    <div class="edge" id="edge">On-device AI: starting...</div>
     <button class="menu-btn" id="menuBtn" type="button" aria-expanded="false" aria-controls="drawer">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M18 11V6a2 2 0 0 0-4 0v4"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/>
@@ -299,6 +360,31 @@ PAGE = """<!doctype html>
   document.querySelectorAll(".sign").forEach(function (el) {
     el.onclick = function () { el.classList.toggle("zoom"); };
   });
+  // People found by the Edge Impulse model running on this UNO Q, drawn over the live view.
+  var feed = document.getElementById("feed"), cv = document.getElementById("boxes"), edge = document.getElementById("edge");
+  function drawBoxes(o) {
+    var r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    cv.width = r.width * dpr; cv.height = r.height * dpr;
+    var g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height);
+    var iw = feed.naturalWidth || 4, ih = feed.naturalHeight || 3, k = Math.min(r.width / iw, r.height / ih);
+    var w = iw * k, h = ih * k, ox = (r.width - w) / 2, oy = (r.height - h) / 2;   // object-fit: contain
+    g.lineWidth = 3; g.font = "600 13px -apple-system, sans-serif";
+    (o.boxes || []).forEach(function (b) {
+      var sure = b.conf >= 0.5, x = ox + b.x * w, y = oy + b.y * h;
+      g.strokeStyle = g.fillStyle = sure ? "#4ade80" : "rgba(250,204,21,.8)";
+      g.strokeRect(x, y, b.w * w, b.h * h);
+      g.fillText("person " + b.conf.toFixed(2), x + 4, Math.max(14, y - 5));
+    });
+  }
+  function poll() {
+    if (document.hidden) return;
+    fetch("/occupancy", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (o) {
+      drawBoxes(o);
+      edge.innerHTML = o.people == null ? "On-device AI (Arduino UNO Q): " + (o.error || "paused")
+        : "On-device AI (Arduino UNO Q): <b>" + o.people + (o.people === 1 ? " person" : " people") + "</b> \u00b7 " + o.ms + " ms";
+    }).catch(function () {});
+  }
+  setInterval(poll, 1000); poll();
   document.addEventListener("visibilitychange", function () {
     document.getElementById("feed").src = document.hidden ? "" : "/preview.mjpg";
   });
@@ -346,6 +432,11 @@ class Handler(BaseHTTPRequestHandler):
                                "last_frame_age_s": round((time.time_ns() - ns) / 1e9, 2) if ns else None}).encode()
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        elif path == "/occupancy":
+            body = json.dumps(occupancy_json()).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
         elif path == "/climate":
             fresh = climate["celsius"] is not None and time.time() - climate["at"] < 30
             body = json.dumps({"celsius": climate["celsius"] if fresh else None,
@@ -369,5 +460,6 @@ class Handler(BaseHTTPRequestHandler):
 
 threading.Thread(target=capture_loop, daemon=True).start()
 threading.Thread(target=climate_loop, daemon=True).start()
+threading.Thread(target=occupancy_loop, daemon=True).start()
 ThreadingHTTPServer.daemon_threads = True
 ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

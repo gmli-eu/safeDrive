@@ -22,6 +22,11 @@ FRESH_FIX_AGE = int(os.environ.get("FRESH_FIX_AGE", "60"))   # older than this: 
 FIX_WAIT = float(os.environ.get("FIX_WAIT", "30"))           # check-in: how long a late answer from the phone still counts
 MOVED_M = float(os.environ.get("MOVED_M", "100"))            # check-in: send the late answer only if it's this far off
 SOS_FIX_WAIT = float(os.environ.get("SOS_FIX_WAIT", "60"))   # SOS with no location at all: keep waiting this long
+# A Telegram live location that's still being shared stays valid this long without an update
+# (Telegram only sends a new position when the phone moves).
+LIVE_SHARE_MAX_AGE = int(os.environ.get("LIVE_SHARE_MAX_AGE", str(6 * 3600)))
+SHARE_HOWTO = ("To include your location in alerts, share your live location in this chat: "
+               "📎 → Location → Share My Live Location → Until I turn it off.")
 STATE_FILE = pathlib.Path(os.environ.get("STATE_DIR", "/data")) / "telegram.json"
 
 lock = threading.Lock()
@@ -52,7 +57,20 @@ def recipients(names=None):
 
 def recent_fix():
     with lock: f = dict(fix) if fix else None
-    return f if f and time.time() - f["tst"] <= MAX_FIX_AGE else None
+    if not f: return None
+    sharing = f.get("live_until", 0) > time.time()   # Telegram live location still being shared
+    return f if time.time() - f["tst"] <= (LIVE_SHARE_MAX_AGE if sharing else MAX_FIX_AGE) else None
+
+def new_fix(f, source):
+    # A new phone position, from OwnTracks or a Telegram live location.
+    global fix
+    with lock:
+        fix = f
+        state["fix"] = f
+        save_state()
+    fix_arrived.set()
+    log(f"phone location ({source})", f["lat"], f["lon"], "acc", f.get("acc"))
+    threading.Thread(target=update_live, daemon=True).start()
 
 def fix_age(f): return time.time() - f["tst"]
 
@@ -114,7 +132,7 @@ def send_sos():
         elif asked:
             text = head + "📍 Getting the location from the phone..."
         else:
-            text = head + "⚠️ No recent GPS fix from the phone (is OwnTracks running?)."
+            text = head + "⚠️ No recent location from the phone (is its live location shared with a SafeDrive bot?)."
         msgs, errors = [], []
         t0 = time.time()
         def send_live(token, chat, f):
@@ -173,7 +191,7 @@ def send_checkin(to):
         text = "I'm ok and I've arrived."
         if f: text += f"\nhttps://maps.google.com/?q={f['lat']:.6f},{f['lon']:.6f}"
         elif asked: text += "\n📍 Getting the location from the phone..."
-        else: text += "\n⚠️ No recent GPS fix from the phone, so no location."
+        else: text += "\n⚠️ No recent location from the phone (is its live location shared with a SafeDrive bot?)."
         errors = []
         def send_pin(token, chat, f):
             tg(token, "sendLocation", chat_id=chat, latitude=f["lat"], longitude=f["lon"],
@@ -238,15 +256,11 @@ def on_message(c, userdata, m):
     except Exception: data = m.payload.decode(errors="replace")
     if m.topic.startswith("owntracks/"):
         if isinstance(data, dict) and data.get("_type") == "location":
-            with lock:
-                fix = {"lat": data["lat"], "lon": data["lon"], "acc": data.get("acc"), "tst": data.get("tst", time.time())}
-                state["fix"] = fix
-                # owntracks/<user>/<device>: where ask_phone() sends the phone commands
-                if m.topic.count("/") == 2: state["phone_topic"] = m.topic
-                save_state()
-            fix_arrived.set()
-            log("phone location", data["lat"], data["lon"], "acc", data.get("acc"))
-            threading.Thread(target=update_live, daemon=True).start()
+            # owntracks/<user>/<device>: where ask_phone() sends the phone commands
+            if m.topic.count("/") == 2:
+                with lock: state["phone_topic"] = m.topic
+            new_fix({"lat": data["lat"], "lon": data["lon"], "acc": data.get("acc"),
+                     "tst": data.get("tst", time.time())}, "OwnTracks")
         return
     if m.topic == "car/hub/state": return
     log("MQTT", m.topic, data)
@@ -256,7 +270,23 @@ def on_message(c, userdata, m):
     elif m.topic == "car/atech/checkin" and isinstance(data, dict):
         threading.Thread(target=send_checkin, args=(data.get("to"),), daemon=True).start()
 
-# ---------- Telegram: link chats, answer /where ----------
+# ---------- Telegram: link chats, answer /where, take live locations ----------
+def telegram_location(name, token, cid, msg, edited):
+    # A location shared in a chat linked to one of our bots. A live location arrives as
+    # one message, then as edits of it while the phone moves.
+    loc = msg["location"]
+    period = loc.get("live_period")
+    if period: live_until = float("inf") if period >= 0x7FFFFFFF else msg["date"] + period
+    else: live_until = 0   # one-off pin, or a live location that was stopped
+    new_fix({"lat": loc["latitude"], "lon": loc["longitude"], "acc": loc.get("horizontal_accuracy"),
+             "tst": msg.get("edit_date") or msg["date"], "live_until": live_until},
+            f"Telegram {name}{' live' if period else ''}")
+    if edited: return
+    if period:
+        tg(token, "sendMessage", chat_id=cid, text="📍 Thanks, alerts will include this live location while you share it.")
+    else:
+        tg(token, "sendMessage", chat_id=cid, text="📍 Got it, but that's a one-time location. " + SHARE_HOWTO)
+
 def telegram_loop(bot):
     name, token = bot["name"], bot["token"]
     while True:  # the hub can start before the Jetson has internet: keep trying until Telegram answers
@@ -266,23 +296,30 @@ def telegram_loop(bot):
     offset = None
     while True:
         try:
-            for u in tg(token, "getUpdates", timeout=30, offset=offset, allowed_updates='["message"]'):
+            for u in tg(token, "getUpdates", timeout=30, offset=offset, allowed_updates='["message","edited_message"]'):
                 offset = u["update_id"] + 1
-                msg = u.get("message") or {}
+                edited = "edited_message" in u
+                msg = u.get("edited_message") or u.get("message") or {}
                 chat = msg.get("chat", {})
                 if chat.get("type") != "private": continue
                 cid = str(chat["id"])
                 with lock:
                     chats = state["chats"].setdefault(name, [])
-                    new = cid not in chats
+                    new = cid not in chats and not edited
                     if new: chats.append(cid); save_state()
+                    linked = cid in chats
                 if new:
                     log(f"Telegram {name}: linked {chat.get('first_name')} ({cid})")
-                    tg(token, "sendMessage", chat_id=cid, text="✅ SafeDrive connected. Emergency alerts from the car will come here.")
+                    tg(token, "sendMessage", chat_id=cid, text="✅ SafeDrive connected. Emergency alerts from the car will come here.\n\n" + SHARE_HOWTO)
+                if "location" in msg:
+                    # Only from chats linked to one of the configured bots.
+                    if linked: telegram_location(name, token, cid, msg, edited)
+                elif edited or new:
+                    pass
                 elif (msg.get("text") or "").startswith("/where"):
                     with lock: f = dict(fix) if fix else None
                     if f: tg(token, "sendLocation", chat_id=cid, latitude=f["lat"], longitude=f["lon"])
-                    else: tg(token, "sendMessage", chat_id=cid, text="No location from the phone yet.")
+                    else: tg(token, "sendMessage", chat_id=cid, text="No location from the phone yet. " + SHARE_HOWTO)
                 else:
                     tg(token, "sendMessage", chat_id=cid, text="SafeDrive is watching. Send /where for the car's current location.")
         except Exception as e:

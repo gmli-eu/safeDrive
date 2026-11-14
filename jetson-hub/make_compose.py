@@ -29,6 +29,11 @@ tz = secrets.get("tz", "Europe/Helsinki")
 env = {"HUB_B64": hub_b64, "MQTT_HOST": "127.0.0.1", "LIVE_PERIOD": "900", "STATE_DIR": "/data", "TZ": tz,
        "TELEGRAM_BOTS": json.dumps(bots), "GEMINI_API_KEY": secrets.get("gemini_api_key", "")}
 if secrets.get("gemini_model"): env["GEMINI_MODEL"] = secrets["gemini_model"]
+# The Uno Q serves the cabin climate (Modulino Thermo) next to the camera stream.
+camera_url = secrets.get("camera_url", "http://172.20.10.4:8090/stream.mjpg")
+env["CLIMATE_URL"] = secrets.get("climate_url", camera_url.rsplit("/", 1)[0] + "/climate")
+for key in ("hot_car_c", "cold_car_c", "cabin_hold_s"):   # optional: lower the limits for a demo
+    if key in secrets: env[key.upper()] = str(secrets[key])
 # voice.py is too big for one env var even compressed: split into VOICE_B64_0, _1, ... (joined at start).
 voice_b64 = b64z(here / "voice.py")
 VOICE_PART = 30000
@@ -46,7 +51,7 @@ for key in ("llm_model", "whisper_model", "piper_voice", "gemini_model", "gestur
         v = secrets[key]
         voice_env[key.upper()] = json.dumps(v) if isinstance(v, dict) else ",".join(v) if isinstance(v, list) else str(v)
 vision_env = {"VISION_B64": b64z(here / "vision.py"), "DATA_DIR": "/data", "TZ": tz,
-              "CAMERA_URL": secrets.get("camera_url", "http://172.20.10.4:8090/stream.mjpg")}   # the Uno Q (unoq-camera/)
+              "CAMERA_URL": camera_url}   # the Uno Q (unoq-camera/)
 dash_env = {"DASH_B64": b64z(here / "dash.py"), "MQTT_HOST": "127.0.0.1", "DASH_PORT": "8092", "TZ": tz}
 compose = f"""services:
   mosquitto:

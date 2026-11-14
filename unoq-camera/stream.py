@@ -5,8 +5,9 @@
 #   GET /frame.jpg     newest frame, 503 if none in the last 2 s
 #   GET /health        JSON: fps, age of the newest frame, camera, size, dark (frames near-black)
 #   GET /icons/*.png   hand-sign guide icons shown in the live view's menu
+#   GET /climate       JSON: cabin temperature and humidity from the Modulino Thermo (see thermo/)
 # Every frame carries X-Captured-At-Unix-Ns, as Wendy's camera sharing expects.
-import glob, json, os, pathlib, subprocess, threading, time
+import glob, json, os, pathlib, socket, struct, subprocess, threading, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 WIDTH, HEIGHT = int(os.environ.get("WIDTH", 1280)), int(os.environ.get("HEIGHT", 720))
@@ -92,6 +93,66 @@ def capture_loop():
         stats["fps"] = 0.0
         log("camera stream ended (unplugged?), restarting in 2 s"); time.sleep(2)
 
+# ---------- cabin climate: Modulino Thermo on the microcontroller ----------
+# The sketch in thermo/ runs on the board's STM32 and offers "thermo_read" through the Arduino
+# router (MessagePack-RPC on a Unix socket). Only the few MessagePack types used here are handled.
+ROUTER_SOCK = os.environ.get("ROUTER_SOCK", "/var/run/arduino-router.sock")
+climate = {"celsius": None, "humidity": None, "at": 0.0, "error": "no reading yet"}
+
+def mp_pack(o):
+    if isinstance(o, list): return bytes([0x90 | len(o)]) + b"".join(mp_pack(x) for x in o)
+    if isinstance(o, int): return bytes([o]) if 0 <= o < 128 else b"\xce" + struct.pack(">I", o)
+    b = o.encode(); return bytes([0xa0 | len(b)]) + b if len(b) < 32 else b"\xd9" + bytes([len(b)]) + b
+
+def mp_unpack(b, i=0):
+    t = b[i]
+    if t <= 0x7f: return t, i + 1
+    if t >= 0xe0: return t - 256, i + 1
+    if 0x90 <= t <= 0x9f or t == 0xdc:
+        n, i = (t & 15, i + 1) if t != 0xdc else (struct.unpack(">H", b[i+1:i+3])[0], i + 3)
+        out = []
+        for _ in range(n): v, i = mp_unpack(b, i); out.append(v)
+        return out, i
+    if 0xa0 <= t <= 0xbf: n = t & 31; return b[i+1:i+1+n].decode(), i + 1 + n
+    if t == 0xd9: n = b[i+1]; return b[i+2:i+2+n].decode(), i + 2 + n
+    if t == 0xc0: return None, i + 1
+    if t in (0xc2, 0xc3): return t == 0xc3, i + 1
+    fixed = {0xcc: ">B", 0xcd: ">H", 0xce: ">I", 0xd0: ">b", 0xd1: ">h", 0xd2: ">i", 0xca: ">f", 0xcb: ">d"}
+    if t in fixed:
+        n = struct.calcsize(fixed[t]); return struct.unpack(fixed[t], b[i+1:i+1+n])[0], i + 1 + n
+    raise ValueError(f"MessagePack type {t:#x} not handled")
+
+def thermo_read(msgid):
+    with socket.socket(socket.AF_UNIX) as s:
+        s.settimeout(3); s.connect(ROUTER_SOCK)
+        s.sendall(mp_pack([0, msgid, "thermo_read", []]))
+        buf = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk: raise ConnectionError("router closed the connection")
+            buf += chunk
+            try: (kind, rid, err, res), _ = mp_unpack(buf); break
+            except (IndexError, struct.error): continue   # message not complete yet
+    if err: raise RuntimeError(f"router: {err}")   # e.g. the sketch isn't running
+    return res
+
+def climate_loop():
+    msgid, last_error = 0, None
+    while True:
+        msgid = msgid % 1000 + 1
+        try:
+            res = thermo_read(msgid)
+            if not res: raise RuntimeError("Modulino Thermo not found on the Qwiic connector")
+            c, h, age_ms = (float(x) for x in res.split(","))
+            climate.update(celsius=round(c, 1), humidity=round(h), at=time.time() - age_ms / 1000, error=None)
+            if last_error: log(f"thermo back: {c:.1f} C, {h:.0f} %")
+            last_error = None
+        except Exception as e:
+            climate["error"] = str(e)[:120]
+            if str(e) != last_error: log("thermo:", e)
+            last_error = str(e)
+        time.sleep(2)
+
 ICON_DIR = pathlib.Path(__file__).resolve().parent / "icons"
 ICONS = {p.name: p.read_bytes() for p in ICON_DIR.glob("*.png")} if ICON_DIR.is_dir() else {}
 
@@ -163,7 +224,7 @@ PAGE = """<!doctype html>
       <button class="close-btn" id="closeBtn" type="button" aria-label="Close menu">&times;</button>
     </div>
     <div class="drawer-body">
-      <p class="tip">Face the camera and <b>hold the sign steady</b> until the car speaks (~2–3 s normally; 1 check is enough when the shared Nemotron cloud is busy). Tap any card to enlarge.</p>
+      <p class="tip">Face the camera and <b>hold the sign steady</b> until the car speaks (~4–6 s normally; 1 check is enough when the shared Nemotron cloud is busy). Tap any card to enlarge.</p>
       <button class="sign" type="button">
         <img src="/icons/all_good.png" alt="Thumbs up">
         <div class="sign-info">
@@ -285,6 +346,15 @@ class Handler(BaseHTTPRequestHandler):
                                "last_frame_age_s": round((time.time_ns() - ns) / 1e9, 2) if ns else None}).encode()
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        elif path == "/climate":
+            fresh = climate["celsius"] is not None and time.time() - climate["at"] < 30
+            body = json.dumps({"celsius": climate["celsius"] if fresh else None,
+                               "humidity": climate["humidity"] if fresh else None,
+                               "age_s": round(time.time() - climate["at"], 1) if climate["at"] else None,
+                               "error": None if fresh else (climate["error"] or "reading too old")}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
         elif path.startswith("/icons/") and path[7:] in ICONS:
             img = ICONS[path[7:]]
             self.send_response(200); self.send_header("Content-Type", "image/png")
@@ -298,5 +368,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
 threading.Thread(target=capture_loop, daemon=True).start()
+threading.Thread(target=climate_loop, daemon=True).start()
 ThreadingHTTPServer.daemon_threads = True
 ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

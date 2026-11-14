@@ -1,7 +1,8 @@
 # Deploy an app to the Jetson and follow its logs until it is up, then stop.
 #   python3 tools/deploy.py atech-flasher     (waits for "mqtt: connected" from every board it flashed)
 #   python3 tools/deploy.py jetson-hub        (waits for the hub's "MQTT connected")
-#   python3 tools/deploy.py unoq-camera       (copies the camera streamer to the Uno Q over SSH)
+#   python3 tools/deploy.py unoq-camera       (copies the camera streamer to the Uno Q over SSH, and flashes
+#                                              the Thermo sketch to its microcontroller when the sketch changed)
 # jetson-hub refuses to deploy while an SOS/accident/threat alert is still being sent: a restart
 # kills the photo/clip upload. --check only runs that check; --force deploys anyway.
 import re
@@ -32,8 +33,23 @@ if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, r
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(root / "stream.py", arcname="stream.py")
         if (root / "icons").is_dir(): tar.add(root / "icons", arcname="icons")
+        tar.add(root / "thermo" / "thermo.ino", arcname="thermo/thermo.ino")
     subprocess.run(ssh + ["rm -rf ~/safedrive-camera/icons && mkdir -p ~/safedrive-camera && tar -xzf - -C ~/safedrive-camera"],
                    input=buf.getvalue(), check=True)
+    # The Thermo sketch runs on the microcontroller: build and flash it on the Uno Q itself (arduino-cli
+    # and the SWD flasher are there), only when it changed since the last flash (~1 min).
+    libs = "Arduino_Modulino Arduino_RouterBridge"
+    r = subprocess.run(ssh + [
+        "cd ~/safedrive-camera/thermo && h=$(sha256sum thermo.ino | cut -c1-16) && "
+        "if [ \"$(cat .flashed 2>/dev/null)\" = \"$h\" ]; then echo 'thermo sketch unchanged'; else "
+        f"for l in {libs}; do arduino-cli lib list | grep -q \"^$l \" || {{ arduino-cli lib update-index >/dev/null && "
+        "arduino-cli lib install $l >/dev/null; }; done && "
+        "arduino-cli compile -b arduino:zephyr:unoq . >/tmp/thermo.log 2>&1 && "
+        "arduino-cli upload -b arduino:zephyr:unoq . >>/tmp/thermo.log 2>&1 && echo \"$h\" > .flashed && "
+        "echo 'thermo sketch flashed' || { grep -i -m5 error /tmp/thermo.log || tail -5 /tmp/thermo.log; exit 1; }; fi"],
+        capture_output=True, text=True)
+    print(r.stdout.strip(), r.stderr.strip()[-500:], flush=True)
+    if r.returncode: sys.exit("thermo sketch build or flash failed")
     # sudo reads the password from the first line of stdin; the rest is the unit file.
     r = subprocess.run(ssh + ["sudo -S -p '' sh -c 'cat > /etc/systemd/system/safedrive-camera.service && "
                               "systemctl daemon-reload && systemctl enable -q safedrive-camera && "
@@ -48,7 +64,13 @@ if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, r
         try: health = json.load(urllib.request.urlopen(f"http://{host}:8090/health", timeout=3))
         except Exception: continue
         if health.get("last_frame_age_s") is not None and health["last_frame_age_s"] < 2 and health["fps"]:
-            print("UP", health, f"\nview: http://{host}:8090/"); sys.exit(0)
+            print("UP", health, f"\nview: http://{host}:8090/")
+            for _ in range(8):   # the first reading takes up to 2 s
+                climate = json.load(urllib.request.urlopen(f"http://{host}:8090/climate", timeout=3))
+                if climate["celsius"] is not None: break
+                time.sleep(1)
+            print("climate:", climate)
+            sys.exit(0 if climate["celsius"] is not None else "FAILED: no reading from the Modulino Thermo")
     print("FAILED: no frames within 30 s", health)
     subprocess.run(ssh + ["journalctl -u safedrive-camera -n 20 --no-pager"])
     sys.exit(1)

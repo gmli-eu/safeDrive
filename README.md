@@ -31,6 +31,7 @@ Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant
 - Turn the cabin light on or off.
 - Directions: puts a **Go to ...** button on the driver's phone that opens Google Maps or Waze.
 - Quick facts, jokes and small talk from Gemma 4, running offline in the car.
+- **Too hot or too cold inside**: a Modulino Thermo on the UNO Q measures the cabin. When it stays at 35 °C or more (or 0 °C or less) for 30 s, the car asks the driver to turn on the AC (or the heating), especially with children, older passengers or pets on board, and the safeDrive page shows a calm red banner. ([details](docs/FEATURES.md#too-hot-or-too-cold-inside-modulino-thermo-on-the-uno-q))
 - "Ask Google ...": a Gemini agent with Google Search, Google Maps and the car's own functions, chained in one request ("find the nearest open pharmacy and text mum I'm stopping there").
 
 **Back seat**
@@ -42,7 +43,7 @@ Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant
 **Check-in and phone**
 
 - **I'm ok**: pick it on the screen with the knob to send "I've arrived and everything is ok." with the location to one or all contacts. ([details](docs/FEATURES.md#check-in-menu-screen-on-ports-1-2-knob-on-ports-13-14))
-- **safeDrive page** on the phone in the holder: shows the destination button and whether the cabin camera can see. ([details](docs/FEATURES.md#safedrive-page-phone-in-the-holder))
+- **safeDrive page** on the phone in the holder: shows the destination button, the cabin temperature (with a calm red banner when it's too hot or too cold) and whether the cabin camera can see. ([details](docs/FEATURES.md#safedrive-page-phone-in-the-holder))
 - **Location** from Telegram live location or OwnTracks; the hub asks the phone for a fresh fix when the last one is over 1 minute old.
 
 ## Feedback so far
@@ -56,7 +57,7 @@ We demoed the SOS button, accident detection and the AI incident reports to seve
 | NVIDIA Jetson Orin Nano (from Wendy, running WendyOS) | The car's brain: MQTT broker, alerts, Gemma 4, Whisper and Piper, camera buffer |
 | Atech 14-port board (ESP32-S3), driver | Screen, knob, SOS and voice buttons, mic, speaker, light, orientation sensor |
 | Atech 14-port board (ESP32-S3), back seat | Button, mic and speaker for the intercom and translator |
-| Arduino UNO Q + Arduino USB Camera | Cabin camera, streamed over Wi-Fi |
+| Arduino UNO Q + Arduino USB Camera + Modulino Thermo | Cabin camera, streamed over Wi-Fi; cabin temperature and humidity |
 | iPhone | Wi-Fi hotspot, location, and the safeDrive page in the phone holder |
 
 ## Privacy
@@ -65,6 +66,7 @@ We demoed the SOS button, accident detection and the AI incident reports to seve
 - What someone says goes to Gemini only when they say "Google" (or "Gemini"), or while the driver has the translator on.
 - Camera frames go to Nemotron on Verda for the cabin watch. A clip and the location go to Gemini only when an SOS, accident or threat alert fires.
 - Camera frames are kept in RAM only, for the last 40 s.
+- The cabin temperature stays in the car. It only goes out inside an incident report, after an SOS, accident or threat alert.
 
 ## What's used where
 
@@ -73,12 +75,13 @@ Challenge requirements are in [HACKATHON.md](HACKATHON.md). Each section lists t
 ### Best Use of Nemotron
 
 - **Model**: NVIDIA Nemotron 3.5 Super VL (`nemotron-3.5-super-vl`), on the Verda-hosted endpoint (`NEMOTRON_URL` in `jetson-hub/voice.py`).
-- **What it does**: the cabin watch. `watch_loop` in `jetson-hub/voice.py` keeps sending a burst of 3 frames from the last 1.5 s. Nemotron returns a JSON verdict (`nemotron`, structured output with a JSON schema): danger level, what it sees, how many people, and any hand sign.
+- **What it does**: the cabin watch. `watch_loop` in `jetson-hub/voice.py` keeps sending a burst of 3 frames from the last 1.5 s, at most one request every 2 s, and none while the car is speaking. Nemotron returns a JSON verdict (`nemotron`, structured output with a JSON schema): danger level, what it sees, how many people, and any hand sign.
 - **Why it matters**: a danger verdict triggers a silent alert to the driver's contacts with photo, clip and incident report (`car/vision/threat` → `send_threat` in `jetson-hub/hub.py`). Hand signs are spoken to the driver. The Gemini agent can call `cabin_status` to read Nemotron's latest verdict.
 - **Improving its output**:
     - A narrow definition of danger (weapon, hitting, restraining, grabbing the controls), so blocked views and normal movement don't trigger alerts.
     - A sign is spoken once 2 of the last 3 verdicts agree. When the shared endpoint is slow (5 s or more per verdict), one verdict is enough, so nobody has to hold a sign for a minute.
     - Dark or missing frames are never sent (`covered`).
+    - Paced to one request every 2 s and paused while the car speaks: when the endpoint answered in 1 s, back-to-back uploads over the phone hotspot broke up the speaker's audio.
     - Temperature 0 and a fixed schema.
     - A `hands=` description in the log, for checking each verdict.
 
@@ -111,7 +114,9 @@ Challenge requirements are in [HACKATHON.md](HACKATHON.md). Each section lists t
 - The **Arduino UNO Q** with the **Arduino USB Camera** is the car's camera node. It joins the hotspot on its own and runs `unoq-camera/stream.py` as a systemd service (`unoq-camera/safedrive-camera.service`).
 - `stream.py` finds the camera (`find_camera`) and serves its own JPEGs at 1280×720, 15 fps (`/stream.mjpg`, `/frame.jpg`, `/preview.mjpg`). It reports `/health`, including when the picture is dark, recovers from stuck auto-exposure (`kick_exposure`), and serves a live view with the hand-sign guide (`unoq-camera/icons/`).
 - Its frames feed every AI feature that needs vision: Nemotron's cabin watch and hand signs (`watch_loop` in `jetson-hub/voice.py`), the alert photo and clip (`jetson-hub/vision.py`) and Gemini's incident report (`describe_clip` in `jetson-hub/hub.py`).
-- The AI models run on the Jetson and on Verda, not on the UNO Q itself, and no Modulino sensors are used.
+- A **Modulino Thermo** on the UNO Q's Qwiic connector measures the cabin. Both halves of the board are used: the sketch `unoq-camera/thermo/thermo.ino` runs on the STM32 microcontroller, reads the sensor every 2 s and offers `thermo_read` through the Arduino router (`Arduino_RouterBridge`). On the Linux side, `climate_loop` in `stream.py` calls it over the router's socket and serves `/climate`. `tools/deploy.py unoq-camera` builds and flashes the sketch on the board itself whenever it changes.
+- The cabin temperature drives the too hot / too cold warning and banner (`check_cabin` in `jetson-hub/hub.py`, `cabin_warning` in `voice.py`), goes into every incident report, shows on the safeDrive page, and answers "how warm is it in the car?" (`climate_sentence` in `jetson-hub/voice.py`, and the Gemini function `cabin_climate`).
+- The AI models run on the Jetson and on Verda, not on the UNO Q itself.
 
 ### Verda Compute Track
 
@@ -123,7 +128,8 @@ Challenge requirements are in [HACKATHON.md](HACKATHON.md). Each section lists t
     2. **Less waste** (`Show a camera-off icon when the camera can't see`): dark or stale frames are never sent, so no GPU time is spent on a covered lens or a parked car at night, and the driver sees when the watch is paused.
     3. **Hand signs** (`Improve hand signs, audio and the camera page`): a `hands` field that makes the model describe the hands across all frames before it names a sign. Voting adapts to the endpoint's speed.
     4. **Robustness**: when the endpoint is busy or fails, the watch retries after 15 s instead of stopping.
-- **Path to scale**: each car sends one small request at a time and nothing while the camera can't see, so load grows linearly with the number of cars on the road. A fleet would move to Verda's auto-scaling containers, with a smaller model on the car's Jetson as an offline fallback. The same endpoint can serve taxis, school buses and delivery fleets, with all cabin video staying in Europe.
+    5. **Sharing the hotspot**: once the endpoint answered in about 1 s, the watch sent 55-77 requests a minute and the car's speech broke up. It now sends at most one every 2 s (`WATCH_MIN_INTERVAL_S`) and nothing while the car speaks: about 28 a minute.
+- **Path to scale**: each car sends at most one small request every 2 s and nothing while the camera can't see, so load grows linearly with the number of cars on the road. A fleet would move to Verda's auto-scaling containers, with a smaller model on the car's Jetson as an offline fallback. The same endpoint can serve taxis, school buses and delivery fleets, with all cabin video staying in Europe.
 
 ### Atech Real World Challenge
 
@@ -131,7 +137,7 @@ Two Atech 14-port boards (ESP32-S3) are the car's body: every input and output i
 
 | Module | Port(s) | Used for | Where |
 |---|---|---|---|
-| `st7735_tft` screen | 1-2 | Menu (check-in, translator), what the car heard and answered, camera-off icon | `atech-flasher/project.yaml` |
+| `st7735_tft` screen | 1-2 | Menu (check-in, translator), what the car heard and answered, camera-off icon, cabin temperature | `atech-flasher/project.yaml` |
 | `microphone` | 3-4 | Driver's voice, streamed to the Jetson over UDP | `project.yaml` (Voice section) |
 | `button` | 5 | Voice button (push to talk, green while listening) | `project.yaml` |
 | `button` | 6 | SOS (hold 2 s) | `project.yaml` (Scenario 2) |

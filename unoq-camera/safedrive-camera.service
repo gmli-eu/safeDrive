@@ -1,5 +1,5 @@
 [Unit]
-Description=SafeDrive camera: USB camera as MJPEG over HTTP (port 8090)
+Description=SafeDrive camera: USB camera as MJPEG over HTTP and cabin climate from the Modulino Thermo (port 8090)
 After=network.target
 
 [Service]

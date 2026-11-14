@@ -7,7 +7,7 @@ How safeDrive is built, and how to set it up and deploy it to the hardware. What
 ```
 Atech driver board ─────┐  Wi-Fi: MQTT + UDP audio                     ┌─> Telegram (alerts, messages, check-ins)
 Atech back-seat board ──┼──────────────────────> Jetson Orin Nano ─HTTPS─┼─> Gemini API (agent, translator, incident report)
-UNO Q + USB camera ─────┤  MJPEG over HTTP       hub.py, voice.py,       ├─> Nemotron 3.5 Super VL on Verda (cabin watch)
+UNO Q + camera, Thermo ─┤  MJPEG, JSON / HTTP    hub.py, voice.py,       ├─> Nemotron 3.5 Super VL on Verda (cabin watch)
 iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.py,     └─> Google Maps, OpenStreetMap
                                                  Ollama: Gemma 4 E2B (offline)
 ```
@@ -16,7 +16,7 @@ iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.p
 | ---------------- | ---------------------------------- | ------------ |
 | `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker; `hub.py`: Telegram alerts, location, incident report; `voice.py`: voice assistant, translator, cabin watch; `vision.py`: camera buffer and clips; `dash.py`: the safeDrive page for the driver's phone |
 | `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware for both boards (`project.yaml`: driver, `passenger.yaml`: back seat), flashes each over USB, then streams their output |
-| `unoq-camera/`   | Arduino UNO Q (systemd service)    | `stream.py`: serves the USB camera over HTTP on port 8090 |
+| `unoq-camera/`   | Arduino UNO Q (systemd service + sketch) | `stream.py`: serves the USB camera and the cabin climate (`/climate`) over HTTP on port 8090; `thermo/thermo.ino`: reads the Modulino Thermo on the microcontroller |
 | `tools/`         | dev machine                        | `deploy.py` deploys an app and waits until it's up; `mqtt_peek.py` watches the broker |
 
 ## Setup
@@ -36,7 +36,8 @@ iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.p
 ```sh
 python3 tools/deploy.py jetson-hub      # ~2 s once cached
 python3 tools/deploy.py atech-flasher   # ~1-2 min: build, flash both boards, wait for each board's MQTT connection
-python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over SSH, restart, wait for frames
+python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over SSH, restart, wait for frames and a Thermo reading
+                                        # (~1 min more when thermo.ino changed: built and flashed on the Uno Q)
 ```
 
 `deploy.py jetson-hub` first checks the hub log and refuses to deploy while an SOS, accident or threat alert from the last 2 minutes hasn't finished sending its clip and incident report, because a restart would drop them. `--check` runs only that check; `--force` deploys anyway.
@@ -59,6 +60,13 @@ The first start of `jetson-hub` downloads about 8 GB (Ollama image, Gemma, Whisp
 - Resolution and frame rate: `WIDTH`, `HEIGHT` and `FPS` in `unoq-camera/safedrive-camera.service` (default 1280×720 at 15 fps).
 - Logs: `journalctl -u safedrive-camera` on the Uno Q.
 
+## Cabin climate (Modulino Thermo)
+
+- Plug the Modulino Thermo into the Uno Q's Qwiic connector. The sketch `unoq-camera/thermo/thermo.ino` runs on the microcontroller and answers `thermo_read` through the Arduino router; `stream.py` asks it every 2 s over `/var/run/arduino-router.sock` and serves `http://172.20.10.4:8090/climate`.
+- `deploy.py unoq-camera` installs the `Arduino_Modulino` and `Arduino_RouterBridge` libraries on the Uno Q if they're missing, then builds and flashes the sketch with `arduino-cli`, only when it changed (`~/safedrive-camera/thermo/.flashed` holds the hash of the last flash).
+- If `/climate` reports `"Modulino Thermo not found"`, check the cable; the sketch looks for the sensor again every 2 s. If it reports a router error, the sketch isn't running: delete `.flashed` on the Uno Q and deploy again.
+- The hub reads `/climate` next to `camera_url` (override with `climate_url`) and publishes `car/cabin/climate` (retained).
+
 ## Configuration
 
 Optional keys in `jetson-hub/secrets.json`:
@@ -79,7 +87,9 @@ Optional keys in `jetson-hub/secrets.json`:
 | `gesture_from` | Who can make hand signs: `"any"` (demos at a table) or `"back"` (real car: back seat only, spoken as "From the back seat: ...") | `"any"` |
 | `voice_peak` | Peak level of spoken answers; lower it if the sound breaks up | 0.75 |
 | `voice_drive` | Compression of spoken answers (0 = off, 3 = louder but harsher) | 2.0 |
+| `hot_car_c`, `cold_car_c` | Cabin temperature (°C) at or beyond which the car asks for the AC or the heating | 35, 0 |
+| `cabin_hold_s` | How long the cabin must stay that hot or cold first | 30 |
 
 Spoken answers are made louder in software (soft compression, peaks at 75 % of full scale) because the board's speaker volume can't go above 0.6 without clipping, and full-scale speech broke up.
 
-Accident thresholds are in `atech-flasher/project.yaml`: `CRASH_G`, `FLIP_DEG`, `FLIP_VOICE_GRACE_MS`. In `jetson-hub/hub.py`: `EMERGENCY_NUMBER` (default `112`), `LIVE_SHARE_MAX_AGE` and `LAST_KNOWN_MAX_AGE`.
+Accident thresholds are in `atech-flasher/project.yaml`: `CRASH_G`, `FLIP_DEG`, `FLIP_VOICE_GRACE_MS`. In `jetson-hub/hub.py`: `EMERGENCY_NUMBER` (default `112`), `LIVE_SHARE_MAX_AGE` and `LAST_KNOWN_MAX_AGE`. In `jetson-hub/voice.py`: `WATCH_MIN_INTERVAL_S`, the shortest time between two Nemotron requests (default 2 s; lower it only with a fast network, or the speech breaks up).

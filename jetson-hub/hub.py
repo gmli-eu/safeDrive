@@ -5,6 +5,8 @@
 # - crash or flip detected by the board's orientation sensor, and the driver doesn't answer
 #   "ARE YOU OK?" within 10 s -> accident alert + live location to everyone.
 # - voice.py asks for a spoken message to be sent (car/voice/send) -> Telegram text to mom, dad or both.
+# - the cabin stays too hot or too cold (Modulino Thermo on the Uno Q) -> the car tells the driver
+#   to turn on the AC (or the heating), and the safeDrive page shows a banner. Nothing to the contacts.
 import base64, collections, json, math, os, pathlib, re, socket, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from concurrent.futures import ThreadPoolExecutor
 import paho.mqtt.client as mqtt
@@ -40,6 +42,11 @@ ACCIDENT_CLIP_BEFORE = 15                    # seconds before the impact
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 VERDICT_WINDOW = 60                          # seconds of Nemotron cabin verdicts kept in memory
+# Cabin climate: the Uno Q reads its Modulino Thermo (unoq-camera/thermo/) and serves it as JSON.
+CLIMATE_URL = os.environ.get("CLIMATE_URL", "http://172.20.10.4:8090/climate")
+HOT_CAR_C = float(os.environ.get("HOT_CAR_C", "35"))     # at or above: too hot, the driver is asked to turn on the AC
+COLD_CAR_C = float(os.environ.get("COLD_CAR_C", "0"))    # at or below: too cold, the heating
+CABIN_HOLD_S = float(os.environ.get("CABIN_HOLD_S", "30"))   # it must stay that hot or cold this long
 # A Telegram live location that's still being shared stays valid this long without an update
 # (Telegram only sends a new position when the phone moves).
 LIVE_SHARE_MAX_AGE = int(os.environ.get("LIVE_SHARE_MAX_AGE", str(6 * 3600)))
@@ -53,6 +60,7 @@ live = None           # active live location: dict(msgs=[(token, chat, message_i
 state = {}
 fix_arrived = threading.Event()   # set on every new phone fix (see wait_for_fix)
 verdicts = collections.deque(maxlen=200)   # recent car/vision/nemotron dicts (last VERDICT_WINDOW s)
+climate = {}          # newest cabin reading: dict(celsius, humidity, at)
 
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
 
@@ -231,6 +239,7 @@ def street_address(loc):
 
 CLIP_SYSTEM = """You describe a short clip from a camera INSIDE a car, sent after an emergency alert, for the driver's family.
 - The camera sees the people in the car, not the road. Never describe the road, other cars or the cause of a crash unless it's clearly visible through a window.
+- An attacker in the back seat behind the driver may be hidden from the camera so only the driver appears in the frame: focus on what is happening to the driver (hands around the neck, a weapon, restraint, grabbing the controls), even if only one person is visible.
 - Describe only what is visible: movement, whether the driver moves or responds, people, objects. Never diagnose injuries or guess at medical state ("the driver doesn't move in the last 5 s of the clip" is OK, "the driver is unconscious" is not).
 - If the clip is dark, black, covered, blurry or missing, say so instead of guessing, and give people as "unknown" unless people are clearly visible (or the cabin monitor reported them when there is no clip).
 - Short, calm, factual: the family reads this on a phone while scared.
@@ -256,7 +265,7 @@ def describe_clip(label, clip, detail, start, end, event_at, vlist):
     video = (f"Cabin clip attached, {time.strftime('%H:%M:%S', time.localtime(start))}-{time.strftime('%H:%M:%S', time.localtime(end))}."
              if clip else "No cabin video is available (camera off or unavailable): say there is no video.")
     parts = [{"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(clip).decode()}}] if clip else []
-    parts.append({"text": f"Trigger: {trigger}\nVideo: {video}\n"
+    parts.append({"text": f"Trigger: {trigger}\nVideo: {video}\nCabin temperature: {climate_text() or 'unknown'}\n"
                           f"Cabin monitor verdicts (NVIDIA Nemotron, times relative to {ref_desc}):\n{verdict_lines}"})
     t = time.time()
     text, _ = gemini({"systemInstruction": {"parts": [{"text": CLIP_SYSTEM}]}, "contents": [{"role": "user", "parts": parts}],
@@ -283,6 +292,7 @@ def send_report(label, targets, clip, detail, start, end, event_at, vlist, t0, l
         report = "\n".join(["📋 AI incident report (Gemini, can be wrong: check the clip)",
                             f"What the clip shows: {c['what'] or 'not available'}",
                             f"People in the car: {c['people'] or 'unknown'}",
+                            *([f"Cabin temperature: {climate_text()}"] if climate_text() else []),
                             f"Where: {place}",
                             f"Nearest emergency department: {er + ' (from Google Maps)' if er else 'unknown'}",
                             call])[:1000]
@@ -463,6 +473,52 @@ def send_threat(what, at):
     send_alert("threat", head, tail, "car/vision/threat/result",
                media=(at - THREAT_CLIP_BEFORE, at + THREAT_CLIP_AFTER), detail=what, event_at=at)
 
+# ---------- too hot or too cold inside: Modulino Thermo ----------
+# Heat (and cold) wears on a driver's attention, and hits children, older passengers and pets hardest.
+# When the cabin stays at or above HOT_CAR_C (or at or below COLD_CAR_C) for CABIN_HOLD_S, the car
+# says it once (voice.py) and the safeDrive page shows a banner while it lasts. car/cabin/comfort is
+# retained: {"state": "hot" | "cold" | "ok", "celsius": ...}. Only the people in the car are told.
+cabin = {"kind": None, "since": 0.0, "announced": None}
+
+def climate_text():
+    c = climate
+    if c.get("celsius") is None or time.time() - c.get("at", 0) > 120: return ""
+    return f"{c['celsius']:.1f} °C, {c['humidity']:.0f} % humidity (Modulino Thermo)"
+
+def check_cabin(celsius, humidity):
+    now = time.time()
+    kind = "hot" if celsius >= HOT_CAR_C else "cold" if celsius <= COLD_CAR_C else None
+    # 1 °C of hysteresis, so a reading wobbling around the limit doesn't warn again and again.
+    if cabin["kind"] == "hot" and celsius > HOT_CAR_C - 1: kind = "hot"
+    if cabin["kind"] == "cold" and celsius < COLD_CAR_C + 1: kind = "cold"
+    if kind != cabin["kind"]:
+        log(f"cabin {kind or 'back to normal'}: {celsius:.1f} °C, {humidity:.0f} %")
+        cabin.update(kind=kind, since=now)
+    want = kind if kind and now - cabin["since"] >= CABIN_HOLD_S else None if kind else "ok"
+    if want and want != cabin["announced"]:
+        cabin["announced"] = want
+        publish("car/cabin/comfort", {"state": want, "celsius": celsius, "at": round(now)}, retain=True)
+
+def climate_loop():
+    # Polls the Uno Q every 5 s. car/cabin/climate (retained) feeds voice.py and the phone page.
+    last_pub, last_err = None, None
+    while True:
+        try:
+            with urllib.request.urlopen(CLIMATE_URL, timeout=5) as r: d = json.load(r)
+            if d.get("celsius") is None: raise RuntimeError(d.get("error") or "no reading")
+            c, h = float(d["celsius"]), float(d["humidity"])
+            climate.update(celsius=c, humidity=h, at=time.time() - float(d.get("age_s") or 0))
+            if last_err: log("cabin climate back:", c, "°C", h, "%")
+            last_err = None
+            if last_pub is None or (c, h) != last_pub[:2] or time.time() - last_pub[2] > 60:
+                publish("car/cabin/climate", {"celsius": c, "humidity": h, "at": round(climate["at"])}, retain=True)
+                last_pub = (c, h, time.time())
+            check_cabin(c, h)
+        except Exception as e:
+            if str(e) != last_err: log("cabin climate unavailable:", e)
+            last_err = str(e)
+        time.sleep(5)
+
 # ---------- scenario 3: "I'm ok" check-in from the screen menu ----------
 CHECKIN_TO = {"mom": {"mom"}, "dad": {"dad"}, "both": {"mom", "dad"}}
 
@@ -588,7 +644,7 @@ def on_message(c, userdata, m):
             new_fix({"lat": data["lat"], "lon": data["lon"], "acc": data.get("acc"),
                      "tst": data.get("tst", time.time())}, "OwnTracks")
         return
-    if m.topic == "car/hub/state": return
+    if m.topic in ("car/hub/state", "car/cabin/climate", "car/cabin/comfort"): return   # our own
     log("MQTT", m.topic, data)
     if m.topic == "car/atech/button" and isinstance(data, dict) and data.get("action") == "long_press" and data.get("id") == "sos":
         set_mode("alerting")
@@ -674,4 +730,5 @@ while True:
     except Exception as e: log("waiting for broker:", e); time.sleep(2)
 if not BOTS: log("TELEGRAM_BOTS not set: Telegram disabled")
 for b in BOTS: threading.Thread(target=telegram_loop, args=(b,), daemon=True).start()
+threading.Thread(target=climate_loop, daemon=True).start()
 client.loop_forever()

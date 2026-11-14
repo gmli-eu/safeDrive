@@ -260,7 +260,8 @@ def status(title, body="", color="fg", ms=8000, board=None):
 
 def on_connect(c, userdata, flags, rc, props=None):
     log("MQTT connected", rc)
-    c.subscribe([("car/atech/voice/#", 0), ("car/passenger/voice/#", 0), ("car/voice/send/result", 1), ("car/translator", 1)])
+    c.subscribe([("car/atech/voice/#", 0), ("car/passenger/voice/#", 0), ("car/voice/send/result", 1), ("car/translator", 1),
+                 ("car/cabin/climate", 0), ("car/cabin/comfort", 1)])
 
 def on_message(c, userdata, m):
     board = next((b for b, t in BOARD_TOPIC.items() if m.topic.startswith(t + "/")), None)
@@ -288,6 +289,12 @@ def on_message(c, userdata, m):
             elif s: s["listening"] = False
     elif m.topic == "car/translator" and isinstance(data, dict):
         if bool(data.get("on")) != translator["on"]: set_translator(bool(data.get("on")))
+    elif m.topic == "car/cabin/climate" and isinstance(data, dict):
+        cabin_climate.clear(); cabin_climate.update(data)
+    elif m.topic == "car/cabin/comfort" and isinstance(data, dict):
+        # Retained: after a restart the old state comes back, and mustn't be said again.
+        if data.get("state") in ("hot", "cold") and time.time() - float(data.get("at") or 0) < 60:
+            threading.Thread(target=cabin_warning, args=(data,), daemon=True).start()
     elif m.topic == "car/voice/send/result" and isinstance(data, dict):
         with lock:
             send_results[data.get("id")] = data
@@ -397,7 +404,7 @@ def transcribe_any(pcm):
     return (fix_names(text) if lang == "en" else text), lang
 
 # ---------- what does the driver want? ----------
-ACTIONS = ["send_message", "ask_google", "directions", "light", "answer", "unclear"]
+ACTIONS = ["send_message", "ask_google", "directions", "light", "climate", "answer", "unclear"]
 NAMES_GOOGLE = re.compile(r"\b(?:google|gemini)\b", re.I)   # the only way a request goes online
 SCHEMA = {"type": "object", "properties": {
     "action": {"type": "string", "enum": ACTIONS},
@@ -413,6 +420,7 @@ Actions:
 - ask_google: the driver says "Google" (or "Gemini") and asks it something, e.g. "ask Google what's the weather", "Google, find the nearest pharmacy and text mom I'm stopping there". Also use it for questions that need the internet, today's information or places (but not for going somewhere: that's directions) even without the word Google (the car will then tell the driver to say "ask Google"). "query" is the driver's whole request, as a complete sentence.
 - directions: the driver wants to go somewhere or asks for directions or a route ("take me to Kamppi", "directions to Mannerheimintie 5", "navigate to the nearest petrol station"). "place" is only the destination, as said ("Kamppi", "Mannerheimintie 5", "nearest petrol station").
 - light: turn the car's light on or off. "on" is true or false.
+- climate: the temperature or humidity INSIDE the car ("how warm is it in here?", "what's the temperature in the car?"). Not the weather outside: that's ask_google.
 - answer: anything else you can answer yourself (simple facts, maths, jokes, small talk). "reply" is the spoken answer: one or two short sentences, no lists or symbols.
 - unclear: empty, cut off, or not understandable."""
 
@@ -422,6 +430,7 @@ EXAMPLES = [
     ("ask google what's the weather for today", {"action": "ask_google", "query": "What's the weather for today?"}),
     ("take me to the central railway station", {"action": "directions", "place": "central railway station"}),
     ("turn off the light", {"action": "light", "on": False}),
+    ("how hot is it in the car", {"action": "climate"}),
 ]
 
 def understand(text):
@@ -454,6 +463,8 @@ def fallback(text):
     # that needs today's internet: the rest of the sentence is the question.
     m = re.search(r"\b(?:google|gemini)\b\W*(?:for\s+|about\s+)?(.+)", t, re.I)
     if m: return {"action": "ask_google", "query": m.group(1)}
+    if (re.search(r"\b(?:temperature|degrees|humid\w*|how (?:hot|warm|cold))\b", t, re.I)
+            and not re.search(r"\b(?:outside|weather|forecast|today|tomorrow)\b", t, re.I)): return {"action": "climate"}
     if re.search(r"\b(?:weather|forecast|news|traffic|score)\b", t, re.I): return {"action": "ask_google", "query": t}   # the car then asks for "ask Google"
     m = re.search(r"\b(?:directions?|route|navigate|navigation|take me|drive me|get me)\s+(?:to|for)\s+(?:the\s+)?(.+)", t, re.I)
     if m: return {"action": "directions", "place": re.sub(r"[\s,]+please$", "", m.group(1).strip(" .?!"), flags=re.I)}
@@ -499,6 +510,9 @@ def handle(s, pcm):
         on = bool(intent.get("on"))
         client.publish("car/atech/light", json.dumps({"on": on}))
         say(s, f"Light {'on' if on else 'off'}.", f"Light {'on' if on else 'off'}", "", "ok")
+    elif act == "climate":
+        said = climate_sentence()
+        say(s, said, "Cabin", said, "fg")
     elif act == "answer":
         reply = (intent.get("reply") or "").strip() or local_answer(text)
         say(s, reply, "Answer", reply, "fg")
@@ -530,6 +544,7 @@ def handle_passenger(s, pcm):
         return say_in(s, lang_out, PASSENGER_ONLY_ASK)
     if act == "ask_google":
         return say_in(s, lang_out, "I can't check that offline. Say 'ask Google' to look it up.")
+    if act == "climate": return say_in(s, lang_out, climate_sentence())
     if act == "answer":
         reply = ((intent.get("reply") or "").strip() if lang_out == "en" else "") or local_answer(text, lang_out)
         return say(s, reply, "", "", "fg", lang=lang_out)
@@ -758,6 +773,29 @@ def directions(s, place):
     say(s, f"Directions to {place} are on your phone. Tap Go when it's safe.", "Directions",
         f"Tap Go on your phone: {place}", "ok")
 
+# ---------- cabin climate: Modulino Thermo on the Uno Q, read by hub.py ----------
+cabin_climate = {}     # newest car/cabin/climate: {"celsius", "humidity", "at"}
+
+def climate_fresh():
+    return cabin_climate.get("celsius") is not None and time.time() - float(cabin_climate.get("at") or 0) < 120
+
+def climate_sentence():
+    if not climate_fresh(): return "I can't read the cabin temperature right now. The sensor isn't answering."
+    c, h = cabin_climate["celsius"], cabin_climate["humidity"]
+    feel = ("Dangerously hot." if c >= 35 else "Quite warm." if c >= 26 else "Comfortable." if c >= 18
+            else "A bit cool." if c >= 10 else "Cold.")
+    return f"It's {c:.0f} degrees in the car, {h:.0f} percent humidity. {feel}"
+
+def cabin_warning(d):
+    # hub.py: the cabin has been too hot or too cold for a while. Said once, calmly, like a hand
+    # sign: no alarm sound, nothing to read on the screen beyond the usual status line.
+    c, hot = d.get("celsius"), d.get("state") == "hot"
+    text = (f"It's getting {'hot' if hot else 'cold'} in here: {c:.0f} degrees. Please turn on the "
+            + ("air conditioning" if hot else "heating")
+            + ", especially with children, older passengers or pets on board.")
+    log("cabin comfort:", text)
+    speak_aside(text, "Too hot" if hot else "Too cold")
+
 # ---------- Gemini: the online co-pilot ----------
 # One agent turn per request: Gemini gets Google Search and Google Maps grounding (with the car's
 # position) plus the car's own functions. It may chain them ("find an open pharmacy and text mom
@@ -775,11 +813,13 @@ GEMINI_FUNCTIONS = [
          "address": {"type": "string", "description": "Its street address, with the city"}}, "required": ["name", "address"]}},
     {"name": "cabin_status", "description": "What the in-car camera monitor (NVIDIA Nemotron) saw most recently: danger level, description, number of people, back-seat hand sign.",
      "parameters": {"type": "object", "properties": {}}},
+    {"name": "cabin_climate", "description": "The temperature (°C) and relative humidity (%) inside the car right now, from the car's own sensor (Arduino Modulino Thermo). Not the weather outside.",
+     "parameters": {"type": "object", "properties": {}}},
 ]
 last_verdict = {}      # newest Nemotron verdict (watch_loop)
 maps_places = []       # Google Maps places Gemini found in this request: [{"title", "placeId", "uri"}]
 
-PASSENGER_FUNCTIONS = {"cabin_status"}   # the back seat may only ask; these functions only read
+PASSENGER_FUNCTIONS = {"cabin_status", "cabin_climate"}   # the back seat may only ask; these functions only read
 
 def gemini_call(contents, system, loc, functions):
     tool_config = {"includeServerSideToolInvocations": True}
@@ -813,6 +853,9 @@ def run_function(name, args, said="", board="driver"):
     if name == "set_light":
         client.publish("car/atech/light", json.dumps({"on": bool(args.get("on"))}))
         return {"ok": True, "light_on": bool(args.get("on"))}
+    if name == "cabin_climate":
+        if not climate_fresh(): return {"ok": False, "error": "the cabin temperature sensor has no recent reading"}
+        return {"ok": True, "celsius": cabin_climate["celsius"], "humidity_percent": cabin_climate["humidity"]}
     if name == "cabin_status":
         if not last_verdict: return {"ok": False, "error": "the camera monitor has no verdict yet"}
         v = dict(last_verdict); v["seconds_ago"] = round(time.time() - v.pop("captured_at", time.time()))
@@ -943,7 +986,19 @@ def say(s, text, title, body, color, lang="en", voice=None):
     threading.Thread(target=synth, daemon=True).start()
     stream(s, q)
 
+# While the car speaks, the cabin watch sends no frames (see watch_loop): Nemotron's uploads share
+# the 2.4 GHz hotspot with the speaker's audio, and at ~1 request a second they broke the speech up.
+speaking = {"n": 0, "until": 0.0}
+
 def stream(s, q):
+    with lock: speaking["n"] += 1
+    try: stream_pcm(s, q)
+    finally:
+        with lock:
+            speaking["n"] -= 1
+            speaking["until"] = time.monotonic() + PLAY_LEAD_S + 0.5   # the board still plays its buffer
+
+def stream_pcm(s, q):
     # Sends 16 kHz PCM from the queue (None ends it) to the speaker of the session's board, just ahead of playback.
     topic = BOARD_TOPIC[s["board"]] + "/pcm"
     start, sent = None, 0.0
@@ -1135,10 +1190,10 @@ SIGN_WHO = ("anyone visible (the driver too)" if GESTURE_FROM == "any" else
 WATCH_PROMPT = f"""You are the safety monitor of a car. The images are frames from a camera inside the car (their order is given below).
 Answer these questions.
 
-1. "level": is anyone near the driver attacking the driver or taking control of the car?
-"danger" = clearly happening now: a weapon (knife, gun, bottle raised to strike); hitting, choking or physically restraining the driver; grabbing the steering wheel, gear lever or handbrake. This silently alerts the driver's family, so use it only for these.
-"watch" = risky but not an attack: something blocking the driver's view or covering their eyes or face, objects thrown, a scuffle starting, a hand moving toward the wheel.
-"none" = everything else: talking, eating, phones, normal gestures, hand signs, sleeping, empty seats, a blurry or dark frame.
+1. "level": what is happening to the driver right now? An attacker in the back seat behind the driver may be hidden by the seat or out of frame, so ONLY the driver (1 person) may be visible: judge ALL danger and watch rules by what is happening to the driver, whether or not another person can be seen, and even if the hands or weapon appear to belong to the driver.
+"danger" = clearly happening now (even if only 1 person is visible): a weapon (knife, gun, bottle raised to strike); hitting, choking, strangling or physically restraining the driver (hands or an arm around or grasping the driver's neck or throat, or pulling the driver back); grabbing or yanking the steering wheel, gear lever or handbrake. This silently alerts the driver's family, so use it only for these.
+"watch" = risky but not an attack (even if only 1 person is visible): something blocking the driver's view or covering their eyes or face, objects thrown, a scuffle starting, a hand reaching for the wheel.
+"none" = everything else: talking, eating, phones, normal gestures, hand signs, casually touching the chin or collar with one finger, sleeping, empty seats, a blurry or dark frame.
 "what" = one short factual sentence of what you see (empty if none).
 
 2. "hands": one short sentence on what any raised or moving hands do across ALL frames (not only the last frame): one or both hands, shape (flat, fist, thumb up, single index finger raised, two hands in a perpendicular T/cross, or two palms pressed vertically together), which way the palm faces (down, up, inward, toward the camera), whether near the chin/mouth, and how they move from the first frame to the last. "none" only if no hand is raised in any frame.
@@ -1189,6 +1244,9 @@ def nemotron(content, max_tokens=300, schema=None):
     return res["choices"][0]["message"].get("content") or ""
 
 WATCH_FRAMES, WATCH_SPAN_S, WATCH_WIDTH = 3, 1.5, 640    # a short burst shows movement (a hand reaching for the wheel)
+# At most one request every WATCH_MIN_INTERVAL_S: when the endpoint answers in 1 s, unpaced requests
+# (3 frames each, ~100 KB/s up the hotspot) took the Wi-Fi from the speaker's audio.
+WATCH_MIN_INTERVAL_S = float(os.environ.get("WATCH_MIN_INTERVAL_S", "2"))
 
 def shrink(jpg):
     # 1280x720 -> 640 px wide, ~30 KB: a quarter of the upload over the hotspot and fewer image tokens.
@@ -1234,15 +1292,20 @@ def watch_loop():
     if not VERDA_KEY:
         log("Nemotron off: no VERDA_INFERENCE_KEY"); return
     recent_gestures, spoken_gesture = collections.deque(maxlen=3), None
+    last_ask = 0.0
     while True:
         try:
+            while True:   # quiet while the car speaks, and paced
+                with lock: busy = speaking["n"] or time.monotonic() < speaking["until"]
+                if not busy and time.monotonic() - last_ask >= WATCH_MIN_INTERVAL_S: break
+                time.sleep(0.2)
             try: frames, captured = camera_frames()
             except (urllib.error.HTTPError, OSError) as e:
                 camera_state("off", e); time.sleep(5); continue
             if time.time() - captured > MAX_FRAME_AGE_S: camera_state("off", "frames too old"); time.sleep(2); continue
             if covered(frames[-1]): camera_state("dark"); time.sleep(2); continue   # no point asking about a black frame
             camera_state("ok")
-            t = time.time()
+            t = time.time(); last_ask = time.monotonic()
             intro = (f"{len(frames)} frames from the last {WATCH_SPAN_S} s, oldest first, newest last. Judge danger on the newest frame,"
                      " and count a hand sign if it is clearly made across the frames (moving signs like thank_you, volume_down, volume_up"
                      " or faster may start in an earlier frame and move down by the last)." if len(frames) > 1 else "One frame.")

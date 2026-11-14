@@ -23,11 +23,12 @@ import paho.mqtt.client as mqtt
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DASH_PORT", "8092"))
-TOPICS = {"car/nav/destination": "destination", "car/vision/camera": "camera"}   # retained, so a new page gets them at once
+TOPICS = {"car/nav/destination": "destination", "car/vision/camera": "camera",   # retained, so a new page gets them at once
+          "car/cabin/climate": "climate", "car/cabin/comfort": "comfort"}
 
 def log(*a): print(time.strftime("%H:%M:%S"), "[dash]", *a, flush=True)
 
-state = {"destination": None, "camera": None}
+state = {"destination": None, "camera": None, "climate": None, "comfort": None}
 version = 0
 changed = threading.Condition()
 
@@ -78,10 +79,15 @@ PAGE = """<!doctype html>
   a.go:active { filter:brightness(.85); }
   a.alt { display:block; text-align:center; color:var(--accent); font-size:18px; padding:14px; text-decoration:none; }
   .hint { color:var(--muted); font-size:13px; text-align:center; }
+  /* Too hot or cold inside: one calm line, no motion or sound, readable at a glance. */
+  .comfort { background:#5c1a1a; color:#ffd9d6; border-radius:14px; padding:10px 14px; font-size:16px;
+    text-align:center; }
+  .comfort b { color:#fff; }
   [hidden] { display:none !important; }
 </style></head>
 <body>
-<header><h1>SafeDrive</h1><span class="pill"><span class="dot" id="dot"></span><span id="conn">connecting</span></span></header>
+<header><h1>SafeDrive</h1><span class="pill" id="climate" hidden></span><span class="pill"><span class="dot" id="dot"></span><span id="conn">connecting</span></span></header>
+<div class="comfort" id="comfort" role="status" hidden></div>
 <main>
   <section id="idle" class="idle" hidden><b>Ready</b>Ask the car for directions, for example<br>"Hey car, directions to Kamppi".</section>
   <section id="dest" hidden>
@@ -117,6 +123,17 @@ function render() {
     document.getElementById("dAddr").textContent = d.address || "";
     document.getElementById("dWhen").textContent = (d.heard ? "Heard \u201c" + d.heard + "\u201d \u00b7 " : "") + "Asked " + ago(d.at || 0);
   }
+  var c = state.climate, cEl = document.getElementById("climate");
+  var cOk = c && c.celsius != null && Date.now() / 1000 - (c.at || 0) < 120;
+  cEl.hidden = !cOk;
+  if (cOk) {
+    cEl.textContent = "\U0001F321\ufe0f " + Math.round(c.celsius) + " \u00b0C \u00b7 " + Math.round(c.humidity) + " %";
+    cEl.style.color = c.celsius >= 35 || c.celsius <= 0 ? "var(--warn)" : "";
+  }
+  var k = state.comfort && state.comfort.state, bEl = document.getElementById("comfort");
+  bEl.hidden = !(cOk && (k === "hot" || k === "cold"));
+  if (!bEl.hidden) bEl.innerHTML = "<b>Too " + k + " inside, " + Math.round(c.celsius) + " \u00b0C.</b> Turn on the "
+    + (k === "hot" ? "AC" : "heating") + ".";
   var cam = state.camera && state.camera.state;
   document.getElementById("camera").textContent = cam === "ok" ? "" : cam === "dark" ? "Cabin camera can't see (dark or covered)" : cam === "off" ? "Cabin camera is off" : "";
 }

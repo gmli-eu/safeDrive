@@ -186,6 +186,27 @@ code:
       screen.drawLine(x + 1, y + 10, x + 15, y, ATECH_ALERT);
     }
 
+    // Cabin temperature from the hub (car/cabin/climate, retained; the UNO Q's Modulino Thermo),
+    // top right, left of the camera icon when that shows. Red when the cabin is dangerously hot
+    // or cold. Hidden when the hub hasn't sent one for 3 min (sensor or UNO Q down).
+    static const unsigned long CABIN_TEMP_MAX_AGE_MS = 180000;
+    int cabinTemp = 0;
+    unsigned long cabinTempAt = 0;
+    bool cabinTempShown = false;
+    bool cabinTempFresh() { return cabinTempAt && millis() - cabinTempAt < CABIN_TEMP_MAX_AGE_MS; }
+
+    void drawCabinTemp() {
+      String n(cabinTemp);
+      int16_t textW = n.length() * 6, total = textW + 10;          // digits, degree ring, C
+      int16_t right = screen.width() - (cameraBlind ? 18 : 2);
+      int16_t x = right - total, y = 3;
+      uint16_t color = (cabinTemp >= 35 || cabinTemp <= 0) ? ATECH_ALERT : ATECH_MUTED;
+      screen.fillRect(x - 2, 0, total + 3, 12, ATECH_BG);          // keep it readable over a title
+      screen.displayText(n, x, y, 1, color);
+      screen.drawCircle(x + textW + 1, y + 1, 1, color);           // the font's degree sign isn't reliable
+      screen.displayText("C", x + textW + 4, y, 1, color);
+    }
+
     void drawMenu() {
       menuDirty = false;
       int16_t w = screen.width();
@@ -229,6 +250,9 @@ code:
         }
       }
       if (cameraBlind) drawCameraOff();
+      // Not over the big status titles or the accident countdown: they need the whole width.
+      cabinTempShown = cabinTempFresh() && menu != MENU_STATUS && menu != MENU_ACCIDENT;
+      if (cabinTempShown) drawCabinTemp();
       screen.display();
     }
 
@@ -432,6 +456,14 @@ code:
       } else if (t == "car/vision/camera") {
         bool blind = p.indexOf("\"ok\"") < 0;   // {"state": "ok" | "dark" | "off"}
         if (blind != cameraBlind) { cameraBlind = blind; menuDirty = true; }
+      } else if (t == "car/cabin/climate") {
+        int a = p.indexOf("\"celsius\":");                  // {"celsius": 26.4, "humidity": 30.0, "at": ...}
+        if (a >= 0) {
+          float c = p.substring(a + 10).toFloat();
+          int rounded = (int)(c < 0 ? c - 0.5f : c + 0.5f);
+          if (rounded != cabinTemp || !cabinTempFresh()) menuDirty = true;
+          cabinTemp = rounded; cabinTempAt = millis();
+        }
       } else if (t == "car/atech/voice/status") {
         onVoiceStatus(p);
       } else if (t == "car/translator/lang") {
@@ -506,6 +538,7 @@ code:
               mqtt.subscribe("car/atech/voice/stop");
               mqtt.subscribe("car/atech/voice/status");
               mqtt.subscribe("car/vision/camera");
+              mqtt.subscribe("car/cabin/climate");
               mqtt.subscribe("car/translator/lang");
               mqtt.publish("car/translator", translatorOn ? "{\"on\":true}" : "{\"on\":false}", true);   // after a reboot: off
               logLine("mqtt: connected");
@@ -691,4 +724,5 @@ code:
         showStatus("No reply", "The hub didn't answer. Is it running?", ATECH_ALERT, 5000);
       }
     }
+    if (cabinTempShown && !cabinTempFresh()) menuDirty = true;   // stale: take it off the screen
     if (menuDirty) drawMenu();

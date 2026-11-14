@@ -23,14 +23,14 @@ How each feature behaves, in detail. The overview is in the [README](../README.m
 
 ### Cabin watch (NVIDIA Nemotron 3.5 Super VL)
 
-- `voice.py` sends Nemotron 3.5 Super VL (Verda endpoint, `VERDA_INFERENCE_KEY` in `.env` or `verda_inference_key` in `jetson-hub/secrets.json`) a burst of 3 camera frames from the last 1.5 s, downscaled to 640 px, one request at a time, as fast as the endpoint answers (a few seconds when it isn't busy).
+- `voice.py` sends Nemotron 3.5 Super VL (Verda endpoint, `VERDA_INFERENCE_KEY` in `.env` or `verda_inference_key` in `jetson-hub/secrets.json`) a burst of 3 camera frames from the last 1.5 s, downscaled to 640 px, one request at a time, at most one every 2 s (`WATCH_MIN_INTERVAL_S`). Nothing is sent while the car speaks: the uploads share the phone hotspot with the speaker's audio, and at one request a second they broke the speech up.
 - It judges two things. **Danger to the driver**: only a weapon, hitting or restraining the driver, or grabbing the wheel, gear lever or handbrake counts as danger. That goes to `hub.py` (`car/vision/threat`), which alerts every linked chat silently like SOS, with photo and clip; nothing shows or sounds in the car. A blocked view or covered eyes is only logged. **Hand signs** (see below): spoken to the driver once Nemotron reports the same sign in 2 of its last 3 answers (or in one answer when Nemotron took 5 s or more, so a busy endpoint doesn't make someone hold a sign for a minute), never acted on.
 - Every verdict is published, retained, on `car/vision/nemotron`; the Gemini agent can read the latest one ("is everything OK in the back?").
 - If the camera can't see (the picture is almost uniformly black: lid closed, lens blocked, or a dark cabin at night, since the camera has no infrared) or sends nothing, Nemotron isn't asked, and the board's screen shows a crossed-out camera icon in the top-right corner until the picture is back (`car/vision/camera`, retained: `ok`, `dark` or `off`).
 
 #### Hand signs to try
 
-Make the sign towards the camera and hold it still for 2-3 seconds: the car speaks it once Nemotron reports it in 2 of its last 3 answers (about one a second), and not again until it's gone from the last 3.
+Make the sign towards the camera and hold it still for 4-6 seconds: the car speaks it once Nemotron reports it in 2 of its last 3 answers (about one every 2 s), and not again until it's gone from the last 3.
 
 | Sign | How to make it | The car says |
 |---|---|---|
@@ -51,6 +51,16 @@ Make the sign towards the camera and hold it still for 2-3 seconds: the car spea
 - The camera goes into a powered USB-C hub on the Uno Q's only USB-C port. The Uno Q joins the hotspot by itself and serves the camera at `http://172.20.10.4:8090/` (live view), `/frame.jpg` (newest frame) and `/stream.mjpg`.
 - On the Jetson, `vision.py` (part of `car-hub`) keeps the last 40 s of frames in RAM only. With an SOS, accident or threat alert, `hub.py` sends every linked chat a photo, an H.264 clip (960 px wide, about 15 KB per second of a still scene) and an AI incident report. If the camera is off, the alert and incident report go out without the photo and clip.
 - The camera's auto exposure can get stuck and deliver black frames with the lens open. When frames stay near-black for 10 s, the streamer switches to manual exposure and back to auto, at most once a minute, and logs it (`journalctl -u safedrive-camera` on the Uno Q). `/health` shows `"dark": true` while frames are near-black: a covered lens, night, or a stuck camera.
+
+### Too hot or too cold inside (Modulino Thermo on the UNO Q)
+
+- Heat and cold wear on the driver's attention, and hit children, older passengers and pets hardest. A Modulino Thermo on the UNO Q's Qwiic connector measures the cabin's temperature and humidity every 2 s, and the hub reads it every 5 s.
+- When the cabin stays at 35 °C or more for 30 s, the car says it once: "It's getting hot in here: 36 degrees. Please turn on the air conditioning, especially with children, older passengers or pets on board." At 0 °C or less, it asks for the heating instead.
+- While it lasts, the safeDrive page shows one calm red line under the title, "Too hot inside, 36 °C. Turn on the AC." (or "Too cold inside, ... Turn on the heating."). No animation, sound or vibration, so it doesn't pull the driver's eyes off the road. It goes away once the cabin is back 1 °C inside the limit.
+- Only the people in the car are told: nothing goes to the driver's contacts.
+- Every incident report (SOS, accident, threat) also gives the cabin temperature and humidity.
+- Ask the car "how warm is it in the car?" (the driver or the back seat), or ask Gemini (function `cabin_climate`). The safeDrive page shows the temperature next to the title. The driver's screen shows it in the top-right corner, left of the camera icon when that's showing, in red at the limits (not on full-screen messages or the accident countdown).
+- For a demo, lower the limits in `jetson-hub/secrets.json`, e.g. `"hot_car_c": 29, "cabin_hold_s": 10`, and warm the sensor in your hand.
 
 ### Incident report
 
@@ -91,6 +101,7 @@ Make the sign towards the camera and hold it still for 2-3 seconds: the car spea
 - Ask the car for directions and the page shows the place with a big **Go to ... →** button. One tap opens Google Maps with the route, ready to start. **Open in Waze instead** does the same in Waze. Both open the website if the app isn't installed.
 - Nothing opens by itself: iOS only lets a page open another app from a tap.
 - When the car corrected a place name it misheard, the card shows what it heard ("Heard "campy"" under Kamppi).
+- Next to the title, the page shows the cabin temperature and humidity (Modulino Thermo), in amber at the limits. While the cabin is too hot or too cold, one calm red line under the title says so ("Too hot inside, 36 °C. Turn on the AC."): see [Too hot or too cold inside](#too-hot-or-too-cold-inside-modulino-thermo-on-the-uno-q).
 - The page also says when the cabin camera can't see. The destination is retained on `car/nav/destination`, so a page opened later still shows it; the button stays for 6 hours.
 
 ## Back seat

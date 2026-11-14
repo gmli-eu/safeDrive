@@ -19,7 +19,7 @@ iPhone (OwnTracks) ---MQTT location--------+
 ## Setup
 
 1. **Secrets** (both are ignored by git):
-    - `jetson-hub/secrets.json`: copy `secrets.example.json` and add the bot tokens from BotFather. For "ask Google", add `gemini_api_key` (from aistudio.google.com), or put `GEMINI_API_KEY=...` in the repo's `.env`; without it everything else still works.
+    - `jetson-hub/secrets.json`: copy `secrets.example.json` and add the bot tokens from BotFather. For "ask Google" and the AI incident report, add `gemini_api_key` (from aistudio.google.com), or put `GEMINI_API_KEY=...` in the repo's `.env`; without it everything else still works.
     - `atech-flasher/secrets.json`: copy `secrets.example.json` and add the Wi-Fi name and password.
     - `unoq-camera/secrets.json`: copy `secrets.example.json` and add the Uno Q's Linux password and its address on the hotspot.
 2. **Wi-Fi**: the board only sees 2.4 GHz. On an iPhone hotspot, turn on _Maximize Compatibility_. The firmware expects the Jetson at `172.20.10.2` (`MQTT_HOST` in `atech-flasher/project.yaml`).
@@ -35,7 +35,7 @@ python3 tools/deploy.py atech-flasher   # ~1 min: build, flash, wait for the boa
 python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over SSH, restart, wait for frames
 ```
 
-`deploy.py jetson-hub` first checks the hub log and refuses to deploy while an SOS, accident or threat alert from the last 2 minutes hasn't finished sending its clip, because a restart would drop the photo and clip. `--check` runs only that check; `--force` deploys anyway.
+`deploy.py jetson-hub` first checks the hub log and refuses to deploy while an SOS, accident or threat alert from the last 2 minutes hasn't finished sending its clip and incident report, because a restart would drop them. `--check` runs only that check; `--force` deploys anyway.
 
 `deploy.py` runs the app's `make_compose.py`, which generates `compose.yml` with the code and secrets embedded. Then it runs `wendy run --detach` and follows the logs until the app is up. The device defaults to `wendyos-hackathon-device-4.local`; set `WENDY_DEVICE` to override it. Each run's `compose.yml` is generated and holds secrets, so it isn't committed.
 
@@ -90,6 +90,13 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 
 - The camera goes into a powered USB-C hub on the Uno Q's only USB-C port. The Uno Q joins the hotspot by itself and serves the camera at `http://172.20.10.4:8090/` (live view), `/frame.jpg` (newest frame) and `/stream.mjpg`.
 - The frames are the camera's own JPEGs, never re-encoded: 1280×720 at 15 fps, about 90 KB each (about 1.3 MB/s). Change `WIDTH`, `HEIGHT` and `FPS` in `unoq-camera/safedrive-camera.service`.
-- On the Jetson, `vision.py` (part of `car-hub`) keeps the last 40 s of frames in RAM only. With an SOS or accident alert, `hub.py` sends every linked chat a photo, then an H.264 clip (960 px wide, about 15 KB per second of a still scene). If the camera is off, the alert goes out without them.
+- On the Jetson, `vision.py` (part of `car-hub`) keeps the last 40 s of frames in RAM only. With an SOS, accident or threat alert, `hub.py` sends every linked chat a photo, an H.264 clip (960 px wide, about 15 KB per second of a still scene) and an AI incident report. If the camera is off, the alert and incident report go out without the photo and clip.
 - The camera's auto exposure can get stuck and deliver black frames with the lens open. When frames stay near-black for 10 s, the streamer switches to manual exposure and back to auto, at most once a minute, and logs it (`journalctl -u safedrive-camera` on the Uno Q). `/health` shows `"dark": true` while frames are near-black: a covered lens, night, or a stuck camera.
 - Keep the Uno Q off the Jetson's USB: there it shows up as a second serial port next to the Atech board.
+
+### Incident report
+
+- About 10–15 s after the alert (once the clip is ready, so it can come just before or after the video), `hub.py` sends a short plain-text summary from Gemini: what the clip shows inside the cabin, how many people are visible, the street address or nearest landmark, the nearest emergency department (from Google Maps), and one or two sentences to read to `112` (for a threat, it warns not to call the driver first).
+- The message says it is AI-generated and can be wrong, and tells the family to check the clip. It describes only visible movement in the cabin and never diagnoses injuries; if the video is dark, blurry or missing, it says so instead of guessing.
+- Two Gemini calls run in parallel to keep it quick: one asks Google Maps for the address and the nearest emergency department as soon as the alert fires, the other describes the clip as soon as it's ready (JSON, no tools). Thinking is turned off for both.
+- Only when an SOS, accident or threat alert fires do the clip, the alert trigger, the cabin monitor's verdicts from that window and the car's location go to Gemini (and the coordinates to Google Maps).

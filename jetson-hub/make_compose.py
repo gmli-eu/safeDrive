@@ -17,8 +17,6 @@ boot = ("import os, subprocess, sys, base64, shutil; "
         "and os.rename(S + '.new', S)); "
         "sys.path.insert(0, S); "
         "import zlib; exec(zlib.decompress(base64.b64decode(os.environ['HUB_B64'])))")
-env = {"HUB_B64": hub_b64, "MQTT_HOST": "127.0.0.1", "LIVE_PERIOD": "900", "STATE_DIR": "/data",
-       "TELEGRAM_BOTS": json.dumps(secrets.get("telegram_bots", []))}
 bots = secrets.get("telegram_bots", [])
 if not (secrets.get("gemini_api_key") and secrets.get("verda_inference_key")):
     # Fall back to GEMINI_API_KEY / VERDA_INFERENCE_KEY in the repo's .env (ignored by git, like secrets.json).
@@ -27,7 +25,11 @@ if not (secrets.get("gemini_api_key") and secrets.get("verda_inference_key")):
         k, _, v = line.partition("=")
         if k.strip() in ("GEMINI_API_KEY", "VERDA_INFERENCE_KEY") and v.strip() and not secrets.get(k.strip().lower()):
             secrets[k.strip().lower()] = v.strip().strip('"').strip("'")
-voice_env = {"VOICE_B64": b64z(here / "voice.py"), "MQTT_HOST": "127.0.0.1",
+tz = secrets.get("tz", "Europe/Helsinki")
+env = {"HUB_B64": hub_b64, "MQTT_HOST": "127.0.0.1", "LIVE_PERIOD": "900", "STATE_DIR": "/data", "TZ": tz,
+       "TELEGRAM_BOTS": json.dumps(bots), "GEMINI_API_KEY": secrets.get("gemini_api_key", "")}
+if secrets.get("gemini_model"): env["GEMINI_MODEL"] = secrets["gemini_model"]
+voice_env = {"VOICE_B64": b64z(here / "voice.py"), "MQTT_HOST": "127.0.0.1", "TZ": tz,
              "OLLAMA_URL": "http://127.0.0.1:11434", "DATA_DIR": "/data", "HUB_STATE": "/hub/telegram.json",
              "CONTACTS": json.dumps([b["name"] for b in bots]),   # names only: Telegram stays in the hub
              "GEMINI_API_KEY": secrets.get("gemini_api_key", ""),
@@ -35,7 +37,7 @@ voice_env = {"VOICE_B64": b64z(here / "voice.py"), "MQTT_HOST": "127.0.0.1",
              "VISION_URL": "http://127.0.0.1:8091"}
 for key in ("llm_model", "whisper_model", "piper_voice", "gemini_model"):   # optional overrides
     if secrets.get(key): voice_env[key.upper()] = secrets[key]
-vision_env = {"VISION_B64": b64z(here / "vision.py"), "DATA_DIR": "/data",
+vision_env = {"VISION_B64": b64z(here / "vision.py"), "DATA_DIR": "/data", "TZ": tz,
               "CAMERA_URL": secrets.get("camera_url", "http://172.20.10.4:8090/stream.mjpg")}   # the Uno Q (unoq-camera/)
 compose = f"""services:
   mosquitto:

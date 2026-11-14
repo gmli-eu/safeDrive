@@ -52,13 +52,13 @@ root = pathlib.Path(__file__).resolve().parent.parent / folder
 timeout = float(args[1]) if len(args) > 1 else 600
 def alert_in_flight():
     # The newest SOS/accident/threat alert in the hub log from the last ALERT_WINDOW s that hasn't
-    # logged its clip as sent or unavailable yet (send_media in hub.py), or None.
+    # finished sending its photo, clip and Gemini incident report yet ("media done") (send_media in hub.py), or None.
     ALERT_WINDOW = 120
     r = subprocess.run([wendy, "device", "logs", app, "--device", DEVICE, "--no-follow", "--tail", "400"],
                        capture_output=True, text=True, timeout=60)
     start = re.compile(r"MQTT car/atech/accident |MQTT car/atech/button .*'sos'|MQTT car/vision/threat .*'high'"
                        r"|\b(SOS|accident|threat) (text|location) to")
-    done = re.compile(r"\b(SOS|accident|threat) (clip (sent|unavailable)|failed)|threat ignored")
+    done = re.compile(r"\b(SOS|accident|threat) (media done|failed)|threat ignored")
     busy = None
     for line in r.stdout.splitlines():
         try: rec = json.loads(line)
@@ -75,7 +75,7 @@ def alert_in_flight():
 if app == "car-hub" and "--force" not in sys.argv:
     busy = alert_in_flight()
     if busy: sys.exit(f"not deploying: an alert is still being sent ({busy}). A restart now would drop its "
-                      "photo and clip. Wait for its clip, or pass --force.")
+                      "photo, clip or incident report. Wait for it to finish, or pass --force.")
 if "--check" in sys.argv: print("no alert in flight"); sys.exit(0)
 
 t0 = time.time()

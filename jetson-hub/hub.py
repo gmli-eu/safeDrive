@@ -5,9 +5,12 @@
 # - crash or flip detected by the board's orientation sensor, and the driver doesn't answer
 #   "ARE YOU OK?" within 10 s -> accident alert + live location to everyone.
 # - voice.py asks for a spoken message to be sent (car/voice/send) -> Telegram text to mom, dad or both.
-import json, math, os, pathlib, socket, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import base64, collections, json, math, os, pathlib, re, socket, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from concurrent.futures import ThreadPoolExecutor
 import paho.mqtt.client as mqtt
+
+if os.environ.get("TZ") == "Europe/Helsinki" and not os.path.exists("/usr/share/zoneinfo/Europe/Helsinki"):
+    os.environ["TZ"] = "EET-2EEST,M3.5.0/3,M10.5.0/4"; time.tzset()
 
 # Try IPv4 before IPv6. On a phone hotspot IPv6 is often advertised but broken, and urllib
 # then waits for the IPv6 attempt to time out before every Telegram call.
@@ -31,6 +34,9 @@ VISION_URL = os.environ.get("VISION_URL", "http://127.0.0.1:8091")
 SOS_CLIP_BEFORE, SOS_CLIP_AFTER = 10, 5      # seconds around the SOS long press
 ACCIDENT_COUNTDOWN = 10                      # the board's "ARE YOU OK?" countdown (ACCIDENT_COUNTDOWN_MS)
 ACCIDENT_CLIP_BEFORE = 15                    # seconds before the impact
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+VERDICT_WINDOW = 60                          # seconds of Nemotron cabin verdicts kept in memory
 # A Telegram live location that's still being shared stays valid this long without an update
 # (Telegram only sends a new position when the phone moves).
 LIVE_SHARE_MAX_AGE = int(os.environ.get("LIVE_SHARE_MAX_AGE", str(6 * 3600)))
@@ -43,6 +49,7 @@ fix = None            # latest OwnTracks fix: dict(lat, lon, acc, tst)
 live = None           # active live location: dict(msgs=[(token, chat, message_id)], until, last_edit)
 state = {}
 fix_arrived = threading.Event()   # set on every new phone fix (see wait_for_fix)
+verdicts = collections.deque(maxlen=200)   # recent car/vision/nemotron dicts (last VERDICT_WINDOW s)
 
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
 
@@ -127,15 +134,132 @@ def tg_upload(token, method, field, filename, data, ctype, **params):
     body = b"".join(parts) + f"--{boundary}--\r\n".encode()
     req = urllib.request.Request(f"https://api.telegram.org/bot{token}/{method}", data=body,
                                  headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    # One try with a long timeout. A retry after a timeout can post the same photo or video twice:
+    # over the hotspot the first upload often did arrive, just slowly.
     try:
         with urllib.request.urlopen(req, timeout=120) as r: res = json.load(r)
     except urllib.error.HTTPError as e: res = json.load(e)
     if not res.get("ok"): raise RuntimeError(f"{method}: {res.get('description')}")
     return res["result"]
 
-def send_media(label, targets, start, end):
-    # Camera photo right away, then a clip of [start, end] (vision.py waits until end has passed).
-    # Best effort: a missing camera never holds up or fails the alert itself.
+# ---------- AI incident report (Gemini) ----------
+# Two Gemini calls in parallel, so the report comes right after the clip:
+#  - where_and_er(): Google Maps at the car's position -> street address + nearest emergency department.
+#    It needs no clip, so it starts with the alert and is done by the time the clip is ready.
+#  - describe_clip(): the cabin clip, the trigger and the Nemotron verdicts -> what is visible, how many
+#    people, a sentence for the dispatcher. No tools, so it answers in JSON. It starts the moment
+#    the clip is fetched, while the video is still uploading to Telegram.
+# Thinking off (budget 0): the Maps call takes ~8 s instead of ~13 s with the same answer, the clip ~5 s.
+def gemini(body, timeout=45):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY}
+    body.setdefault("generationConfig", {})["thinkingConfig"] = {"thinkingBudget": 0}
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r: res = json.load(r)
+            break
+        except urllib.error.HTTPError as e:
+            err = e.read().decode(errors="replace")[:240]
+            if attempt == 0 and e.code == 400 and "thinking" in err.lower():
+                body["generationConfig"].pop("thinkingConfig", None); continue   # a model that must think
+            raise RuntimeError(f"HTTP {e.code}: {err}") from None
+    parts = ((res.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+    tools = [p["toolCall"].get("toolType") or "?" for p in parts if "toolCall" in p]
+    text = "".join(p.get("text", "") for p in parts if "text" in p and not p.get("thought")).strip()
+    return re.sub(r"[*_#`]|\[\d+\]", "", text).strip(), tools
+
+MAPS_SYSTEM = ("Using Google Maps at the car's position, answer in exactly two lines of plain text:\n"
+               "WHERE: <street address or nearest landmark>\n"
+               "ER: <nearest hospital with an emergency department>, <distance in km>\n"
+               "Google Maps already knows the car's position: search with queries like 'building near me' and "
+               "'hospital emergency department near me', never with coordinates. Write unknown when Maps gives no answer. "
+               "Never invent places.")
+
+def where_and_er(loc):
+    t = time.time()
+    text, tools = gemini({"systemInstruction": {"parts": [{"text": MAPS_SYSTEM}]},
+                          "contents": [{"role": "user", "parts": [{"text": "Where is the car, and which emergency department is nearest?"}]}],
+                          "tools": [{"google_maps": {}}],
+                          "toolConfig": {"retrievalConfig": {"latLng": {"latitude": loc["lat"], "longitude": loc["lon"]}}}})
+    line = lambda k: (re.search(rf"^{k}:\s*(.+)$", text, re.M | re.I) or [None, ""])[1].strip()
+    where, er = line("WHERE"), line("ER")
+    unknown = lambda v: not v or v.lower().startswith("unknown")
+    log(f"report: Maps answered in {time.time() - t:.1f}s (tools: {', '.join(tools) or 'none'}): {where!r} / {er!r}")
+    return {"where": None if unknown(where) else where, "er": None if unknown(er) else er}
+
+CLIP_SYSTEM = """You describe a short clip from a camera INSIDE a car, sent after an emergency alert, for the driver's family.
+- The camera sees the people in the car, not the road. Never describe the road, other cars or the cause of a crash unless it's clearly visible through a window.
+- Describe only what is visible: movement, whether the driver moves or responds, people, objects. Never diagnose injuries or guess at medical state ("the driver doesn't move in the last 5 s of the clip" is OK, "the driver is unconscious" is not).
+- If the clip is dark, black, covered, blurry or missing, say so instead of guessing, and give people as "unknown" unless people are clearly visible (or the cabin monitor reported them when there is no clip).
+- Short, calm, factual: the family reads this on a phone while scared.
+JSON fields:
+what: 1-2 short sentences on what the clip shows.
+people: the number of people visible in the car, as digits, or "unknown".
+dispatcher: one or two sentences for the emergency operator: what happened, how many people, whether the driver moves or responds. No location (it is added after)."""
+CLIP_SCHEMA = {"type": "object", "properties": {"what": {"type": "string"}, "people": {"type": "string"}, "dispatcher": {"type": "string"}},
+               "required": ["what", "people", "dispatcher"]}
+
+def describe_clip(label, clip, detail, start, end, event_at, vlist):
+    ref = event_at if event_at is not None else end
+    if label == "SOS":
+        trigger, ref_desc = "SOS: the driver held the emergency button.", "the SOS button press"
+    elif label == "accident":
+        why = {"crash": "crash: a jolt over 2.5 g", "flip": "flip: turned over 75° and stayed still for 3 s"}.get(detail, f"sensor trigger ({detail or 'unknown'})")
+        trigger = f"Accident ({why}), and the driver didn't answer \"ARE YOU OK?\" on the car's screen within 10 s."
+        ref_desc = f"the {detail if detail in ('crash', 'flip') else 'impact'} (the 10 s countdown ended at +{ACCIDENT_COUNTDOWN}s)"
+    else:
+        trigger, ref_desc = f"Cabin threat seen by NVIDIA Nemotron: {detail or 'unclear'}.", "the threat frame"
+    verdict_lines = "\n".join(f"  {v['captured_at'] - ref:+.1f}s: level={v.get('level')} people={v.get('people')} "
+                              f"sign={v.get('instruction')} what={v.get('what')!r}" for v in vlist) or "  none in this window"
+    video = (f"Cabin clip attached, {time.strftime('%H:%M:%S', time.localtime(start))}-{time.strftime('%H:%M:%S', time.localtime(end))}."
+             if clip else "No cabin video is available (camera off or unavailable): say there is no video.")
+    parts = [{"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(clip).decode()}}] if clip else []
+    parts.append({"text": f"Trigger: {trigger}\nVideo: {video}\n"
+                          f"Cabin monitor verdicts (NVIDIA Nemotron, times relative to {ref_desc}):\n{verdict_lines}"})
+    t = time.time()
+    text, _ = gemini({"systemInstruction": {"parts": [{"text": CLIP_SYSTEM}]}, "contents": [{"role": "user", "parts": parts}],
+                      "generationConfig": {"responseMimeType": "application/json", "responseSchema": CLIP_SCHEMA}})
+    d = json.loads(text)
+    log(f"report: clip described in {time.time() - t:.1f}s")
+    return {k: str(d.get(k) or "").strip() for k in ("what", "people", "dispatcher")}
+
+def send_report(label, targets, clip, detail, start, end, event_at, vlist, t0, loc, maps_thread, maps_box):
+    # Best effort: every failure is only logged, the family never gets an error message.
+    try:
+        if not GEMINI_KEY: raise RuntimeError("no GEMINI_API_KEY")
+        c = describe_clip(label, clip, detail, start, end, event_at, vlist)
+        if maps_thread: maps_thread.join(max(0, 45 - (time.time() - t0)))
+        where, er = maps_box.get("where"), maps_box.get("er")
+        coords = f"{loc['lat']:.5f}, {loc['lon']:.5f}" if loc else None
+        place = where or (f"near {coords} (no address from Google Maps)" if coords else "unknown (no recent GPS fix from the phone)")
+        said = c["dispatcher"].rstrip(". ") + "."
+        if where or coords: said += f" Location: {where or coords}."
+        call = f'If you call {EMERGENCY_NUMBER}, say: "{said}"'
+        if label == "threat": call = "Don't call the driver. " + call
+        report = "\n".join(["📋 AI incident report (Gemini, can be wrong: check the clip)",
+                            f"What the clip shows: {c['what'] or 'not available'}",
+                            f"People in the car: {c['people'] or 'unknown'}",
+                            f"Where: {place}",
+                            f"Nearest emergency department: {er + ' (from Google Maps)' if er else 'unknown'}",
+                            call])[:1000]
+        log(f"{label} Gemini report ready after {time.time() - t0:.1f}s:\n{report}")
+        errors = []
+        def one(target):
+            try: tg(target[0], "sendMessage", chat_id=target[1], text=report)
+            except Exception as e:
+                log(f"{label} report to {target[1]} failed:", e)
+                with lock: errors.append(str(e))
+        with ThreadPoolExecutor(max_workers=len(targets)) as pool: list(pool.map(one, targets))
+        if len(errors) == len(targets): raise RuntimeError("; ".join(errors))
+        log(f"{label} report sent ({len(report)} chars) after {time.time() - t0:.1f}s")
+    except Exception as e:
+        log(f"{label} report unavailable:", e)
+
+def send_media(label, targets, start, end, detail=None, event_at=None):
+    # Photo right away, then the clip of [start, end] and the Gemini report. The clip is fetched while
+    # the photo uploads (a slow hotspot must not age frames out of vision.py's 40 s buffer). The report
+    # is written while the clip uploads, so it may arrive before the video.
     def fetch(path, timeout):
         with urllib.request.urlopen(VISION_URL + path, timeout=timeout) as r: return r.read()
     def to_all(method, field, name, data, ctype, **params):
@@ -145,20 +269,44 @@ def send_media(label, targets, start, end):
         with ThreadPoolExecutor(max_workers=len(targets)) as pool: list(pool.map(one, targets))
     t0 = time.time()
     try:
-        photo = fetch("/photo.jpg", 5)
-        to_all("sendPhoto", "photo", "car.jpg", photo, "image/jpeg",
-               caption=f"📷 In the car, {time.strftime('%H:%M:%S')}")
-        log(f"{label} photo sent ({len(photo) // 1024} KB) after {time.time() - t0:.1f}s")
-    except Exception as e:
-        log(f"{label} photo unavailable:", e)
-    try:
-        clip = fetch(f"/clip.mp4?start={start:.3f}&end={end:.3f}", max(end - time.time(), 0) + 90)
-        to_all("sendVideo", "video", "car.mp4", clip, "video/mp4", supports_streaming="true",
-               caption=f"🎥 In the car, {time.strftime('%H:%M:%S', time.localtime(start))}"
-                       f"–{time.strftime('%H:%M:%S', time.localtime(end))}")
-        log(f"{label} clip sent ({len(clip) // 1024} KB) after {time.time() - t0:.1f}s")
-    except Exception as e:
-        log(f"{label} clip unavailable:", e)
+        loc, maps_box, maps_thread = recent_fix(), {}, None
+        if GEMINI_KEY and loc:
+            def run_maps():
+                try: maps_box.update(where_and_er(loc))
+                except Exception as e: log(f"{label} report: Maps lookup failed:", e)
+            maps_thread = threading.Thread(target=run_maps, daemon=True); maps_thread.start()
+        clip_box = [None, []]
+        def grab_clip():
+            try:
+                clip_box[0] = fetch(f"/clip.mp4?start={start:.3f}&end={end:.3f}", max(end - time.time(), 0) + 90)
+            except Exception as e:
+                log(f"{label} clip unavailable:", e)
+            with lock:
+                now = time.time()
+                while verdicts and now - verdicts[0]["captured_at"] > VERDICT_WINDOW: verdicts.popleft()
+                clip_box[1] = [v for v in verdicts if start <= v["captured_at"] <= end]
+        ct = threading.Thread(target=grab_clip, daemon=True); ct.start()
+        try:
+            photo = fetch("/photo.jpg", 5)
+            to_all("sendPhoto", "photo", "car.jpg", photo, "image/jpeg",
+                   caption=f"📷 In the car, {time.strftime('%H:%M:%S')}")
+            log(f"{label} photo sent ({len(photo) // 1024} KB) after {time.time() - t0:.1f}s")
+        except Exception as e:
+            log(f"{label} photo unavailable:", e)
+        ct.join()
+        clip, vlist = clip_box
+        vt = None
+        if clip:
+            def send_clip():
+                to_all("sendVideo", "video", "car.mp4", clip, "video/mp4", supports_streaming="true",
+                       caption=f"🎥 In the car, {time.strftime('%H:%M:%S', time.localtime(start))}"
+                               f"–{time.strftime('%H:%M:%S', time.localtime(end))}")
+                log(f"{label} clip sent ({len(clip) // 1024} KB) after {time.time() - t0:.1f}s")
+            vt = threading.Thread(target=send_clip, daemon=True); vt.start()
+        send_report(label, targets, clip, detail, start, end, event_at, vlist, t0, loc, maps_thread, maps_box)
+        if vt: vt.join()
+    finally:
+        log(f"{label} media done after {time.time() - t0:.1f}s")   # tools/deploy.py waits for this line
 
 def publish(topic, payload, retain=False):
     client.publish(topic, json.dumps(payload), qos=1, retain=retain)
@@ -166,7 +314,7 @@ def publish(topic, payload, retain=False):
 def set_mode(mode): publish("car/hub/state", {"mode": mode}, retain=True)
 
 # ---------- scenarios 2 and 4: SOS long press, accident ----------
-def send_alert(label, head, tail, reply_topic, media=None):
+def send_alert(label, head, tail, reply_topic, media=None, detail=None, event_at=None):
     # Text + live location to every linked chat. Goes out at once with the last fix; the phone
     # is asked for a new one at the same time. When it answers, the live location moves to it
     # (update_live). With no fix at all, the live location follows as soon as the phone
@@ -206,7 +354,7 @@ def send_alert(label, head, tail, reply_topic, media=None):
             list(pool.map(send_one, targets))
         log(f"{label} sent to {len(targets) - len(errors)}/{len(targets)} chats in {time.time() - t0:.1f}s", errors or "")
         if len(errors) == len(targets): raise RuntimeError("; ".join(errors))
-        if media: threading.Thread(target=send_media, args=(label, targets, *media), daemon=True).start()
+        if media: threading.Thread(target=send_media, args=(label, targets, *media, detail, event_at), daemon=True).start()
         if not f and asked and (f := wait_for_fix(SOS_FIX_WAIT)):
             def follow_up(target):
                 token, chat = target
@@ -229,7 +377,7 @@ def send_alert(label, head, tail, reply_topic, media=None):
 
 def send_sos(at):
     send_alert("SOS", "🚨 SafeDrive alert: the driver held the emergency button.\n", "", "car/atech/notify",
-               media=(at - SOS_CLIP_BEFORE, at + SOS_CLIP_AFTER))
+               media=(at - SOS_CLIP_BEFORE, at + SOS_CLIP_AFTER), event_at=at)
 
 ACCIDENT_KIND = {"crash": "a hard impact", "flip": "the car seems to have flipped or rolled over"}
 
@@ -241,7 +389,7 @@ def send_accident(kind, at):
     # The board reports only after its 10 s countdown, so the impact was ~ACCIDENT_COUNTDOWN s ago:
     # the clip covers the run-up to the impact and the countdown after it.
     send_alert("accident", head, tail, "car/atech/accident/result",
-               media=(at - ACCIDENT_COUNTDOWN - ACCIDENT_CLIP_BEFORE, at))
+               media=(at - ACCIDENT_COUNTDOWN - ACCIDENT_CLIP_BEFORE, at), detail=kind, event_at=at - ACCIDENT_COUNTDOWN)
 
 # Threat seen by the camera (voice.py's Nemotron loop publishes car/vision/threat). Silent in the car:
 # nothing on the screen or speaker (car/vision/threat/result has no subscriber), so whoever is
@@ -257,7 +405,7 @@ def send_threat(what, at):
     tail = ("\n\n👉 Don't call the driver: a ringing phone could put them at risk. If the photo confirms it, "
             f"call emergency services ({EMERGENCY_NUMBER}) and give them this location.")
     send_alert("threat", head, tail, "car/vision/threat/result",
-               media=(at - THREAT_CLIP_BEFORE, at + THREAT_CLIP_AFTER))
+               media=(at - THREAT_CLIP_BEFORE, at + THREAT_CLIP_AFTER), detail=what, event_at=at)
 
 # ---------- scenario 3: "I'm ok" check-in from the screen menu ----------
 CHECKIN_TO = {"mom": {"mom"}, "dad": {"dad"}, "both": {"mom", "dad"}}
@@ -362,7 +510,18 @@ def on_connect(c, userdata, flags, rc, props=None):
 def on_message(c, userdata, m):
     global fix, last_threat
     # voice.py's own traffic (audio is binary), and Nemotron's verdict every few seconds (logged by voice.py)
-    if m.topic.startswith("car/atech/voice/") or m.topic in ("car/voice/send/result", "car/vision/nemotron"): return
+    if m.topic.startswith("car/atech/voice/") or m.topic == "car/voice/send/result": return
+    if m.topic == "car/vision/nemotron":
+        try:
+            v = json.loads(m.payload.decode())
+            ts = float(v["captured_at"])
+        except Exception: return
+        now = time.time()
+        if now - ts <= VERDICT_WINDOW:
+            with lock:
+                verdicts.append({**v, "captured_at": ts})
+                while verdicts and now - verdicts[0]["captured_at"] > VERDICT_WINDOW: verdicts.popleft()
+        return
     try: data = json.loads(m.payload.decode() or "null")
     except Exception: data = m.payload.decode(errors="replace")
     if m.topic.startswith("owntracks/"):

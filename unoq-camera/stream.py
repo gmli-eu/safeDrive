@@ -1,6 +1,7 @@
 # Runs on the Arduino UNO Q: serves the USB camera's own MJPEG frames over HTTP, without
 # re-encoding (v4l2-ctl reads the camera, this splits the stream into JPEGs). Standard library only.
-#   GET /              live view: the preview, on-device person boxes, the Thermo reading, hand-sign guide
+#   GET /              live view: the preview, on-device person boxes, the Thermo reading, hand-sign guide,
+#                      and "What NVIDIA Nemotron sees" (the browser reads it from the Jetson: dash.py /nemotron)
 #   GET /stream.mjpg   live multipart MJPEG at full FPS (for the Jetson)
 #   GET /preview.mjpg  live multipart MJPEG capped at ~2.5 fps (for browsers: spares 2.4 GHz Wi-Fi)
 #   GET /frame.jpg     newest frame, 503 if none in the last 2 s
@@ -299,6 +300,32 @@ PAGE = """<!doctype html>
   .sign-how { color:var(--fg); font-size:13.5px; opacity:.92; }
   .sign-says { color:var(--muted); font-size:12.5px; margin-top:4px; font-style:italic; }
   .note { color:var(--muted); font-size:12.5px; line-height:1.45; margin:4px 2px 0; }
+  /* What Nemotron sees: the cabin watch's latest verdicts, from the Jetson (dash.py GET /nemotron). */
+  .nemo { position:absolute; top:max(14px, env(safe-area-inset-top)); left:14px; z-index:10; width:380px;
+    max-width:calc(100% - 190px); padding:12px 14px; border-radius:16px; background:rgba(11,15,20,.84);
+    border:1px solid rgba(118,185,0,.45); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    font-size:13px; line-height:1.4; }
+  .nemo-head { display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; }
+  .nemo-head b { color:#76B900; letter-spacing:.02em; }
+  .nemo-what { font-size:15px; margin:7px 0 4px; }
+  .nemo-row { color:var(--muted); margin-top:3px; }
+  .nemo-row b { color:var(--fg); font-weight:600; }
+  .lvl { display:inline-block; font:700 11px/1 inherit; letter-spacing:.06em; padding:4px 7px; border-radius:6px;
+    margin-right:6px; vertical-align:2px; background:#1f3a12; color:#a3e635; }
+  .lvl.watch { background:#4a3410; color:#fbbf24; }
+  .lvl.danger { background:#5c1a1a; color:#fca5a5; }
+  .said { color:#76B900; font-weight:600; }
+  .nemo.stale { border-color:rgba(255,255,255,.16); }
+  .nemo.stale .nemo-what { color:var(--muted); }
+  .hist { margin:9px 0 0; padding:7px 0 0; border-top:1px solid rgba(255,255,255,.1); list-style:none;
+    font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .hist li { display:flex; gap:8px; white-space:nowrap; overflow:hidden; }
+  .hist li span:last-child { overflow:hidden; text-overflow:ellipsis; }
+  .hist .d { color:#fca5a5; } .hist .w { color:#fbbf24; } .hist .s { color:#76B900; }
+  @media (max-width: 780px) {
+    .nemo { top:calc(max(14px, env(safe-area-inset-top)) + 50px); right:14px; width:auto; max-width:none; }
+    .hist { display:none; }
+  }
   @media (max-width: 780px) {
     .drawer { position:fixed; inset:0 0 0 auto; z-index:30; box-shadow:-12px 0 34px rgba(0,0,0,.7); }
     .backdrop.open { display:block; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:20; }
@@ -308,6 +335,13 @@ PAGE = """<!doctype html>
   <div class="stage">
     <img class="feed" id="feed" src="/preview.mjpg" alt="SafeDrive live camera">
     <canvas class="boxes" id="boxes"></canvas>
+    <section class="nemo stale" id="nemo" aria-live="polite" hidden>
+      <div class="nemo-head"><b>What NVIDIA Nemotron sees</b><span id="nemoTime"></span></div>
+      <div class="nemo-what" id="nemoWhat"></div>
+      <div class="nemo-row" id="nemoHands"></div>
+      <div class="nemo-row" id="nemoSign"></div>
+      <ul class="hist" id="nemoHist"></ul>
+    </section>
     <div class="badges">
       <div class="edge" id="thermo" hidden></div>
       <div class="edge" id="edge">On-device AI: starting...</div>
@@ -441,6 +475,52 @@ PAGE = """<!doctype html>
     }).catch(function () {});
   }
   setInterval(pollThermo, 2000); pollThermo();
+  // What Nemotron sees: the Jetson keeps the cabin watch's recent verdicts (dash.py GET /nemotron).
+  var HUB = "http://172.20.10.2:8092", nemoEl = document.getElementById("nemo");
+  var LEVEL = {low: "none", medium: "watch", high: "danger"};
+  // The chip shows the most serious thing in the verdict, not only the danger level: closed or covered
+  // eyes and phone use are separate fields (voice.py acts on them itself) and leave the level at "none".
+  function status(v) {
+    var l = LEVEL[v.level] || "none";
+    if (l === "danger") return ["danger", "DANGER"];
+    if (v.neck === "around_throat") return ["danger", "THROAT"];
+    if (v.eyes === "closed") return ["watch", "EYES CLOSED"];
+    if (v.eyes === "covered") return ["watch", "EYES COVERED"];
+    if (v.phone === "using") return ["watch", "PHONE"];
+    if (v.neck === "hand_on_throat") return ["watch", "THROAT"];
+    if (l === "watch") return ["watch", "WATCH"];
+    return ["none", "OK"];
+  }
+  var SIGN = {volume_down: "volume down", volume_up: "volume up", slower: "slower", faster: "faster",
+              thank_you: "thank you", need_break: "need a break", all_good: "all good"};
+  var EYES = {open: "open", closed: "closed", covered: "covered", down: "looking down", not_visible: "not visible"};
+  var NECK = {none: "clear", chin_or_face: "hand at chin or face", hand_on_throat: "hand on throat", around_throat: "hands around throat"};
+  function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; }); }
+  function clock(t) { var d = new Date(t * 1000); return d.toTimeString().slice(0, 8); }
+  function pollNemo() {
+    if (document.hidden) return;
+    fetch(HUB + "/nemotron", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (n) {
+      nemoEl.hidden = false;
+      var v = n.recent[0], age = v ? n.now - v.at : 1e9, st = v ? status(v) : ["none", "OK"];
+      var paused = n.camera === "dark" ? "Camera can't see (dark or covered): Nemotron paused"
+                 : n.camera === "off" ? "No camera frames: Nemotron paused" : "";
+      nemoEl.className = "nemo" + (paused || age > 20 ? " stale" : "");
+      document.getElementById("nemoTime").textContent = v ? (v.took_s + " s · " + Math.round(age) + " s ago") : "";
+      document.getElementById("nemoWhat").innerHTML = paused ? esc(paused) : !v ? "Waiting for the first verdict…"
+        : "<span class='lvl " + st[0] + "'>" + st[1] + "</span>" + esc(v.what || "(nothing to report)");
+      document.getElementById("nemoHands").innerHTML = v && !paused ? (v.neck ? "Neck: <b>" + esc(NECK[v.neck] || v.neck) + "</b> · " : "") + (v.eyes ? "Eyes: <b" + ((v.eyes === "closed" || v.eyes === "covered") ? " style='color:#fbbf24'" : "") + ">" + esc(EYES[v.eyes] || v.eyes) + "</b> · " : "")
+        + (v.phone && v.phone !== "none" ? "Phone: <b" + (v.phone === "using" ? " style='color:#fbbf24'" : "") + ">" + esc(v.phone) + "</b> · " : "") + "Hands: <b>" + esc(v.hands || "none") + "</b> · People: <b>" + esc(v.people) + "</b>" : "";
+      document.getElementById("nemoSign").innerHTML = v && !paused ? "Sign: <b>" + esc(SIGN[v.instruction] || "none") + "</b>"
+        + (v.said ? " → <span class='said'>car said “" + esc(v.said) + "”</span>" : "")
+        + " · " + n.per_min + " verdicts/min, median " + (n.median_s == null ? "-" : n.median_s + " s") : "";
+      document.getElementById("nemoHist").innerHTML = n.recent.slice(1, 6).map(function (h) {
+        var hs = status(h), cls = hs[0] === "danger" ? "d" : hs[0] === "watch" ? "w" : h.said ? "s" : "";
+        return "<li class='" + cls + "'><span>" + clock(h.at) + "</span><span>" + hs[1] + "</span><span>"
+          + esc(SIGN[h.instruction] || "-") + "</span><span>" + h.took_s + " s</span><span>" + esc(h.what) + "</span></li>";
+      }).join("");
+    }).catch(function () { nemoEl.hidden = true; });
+  }
+  setInterval(pollNemo, 1000); pollNemo();
   document.addEventListener("visibilitychange", function () {
     document.getElementById("feed").src = document.hidden ? "" : "/preview.mjpg";
   });

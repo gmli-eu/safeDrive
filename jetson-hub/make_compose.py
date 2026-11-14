@@ -46,7 +46,7 @@ voice_env = {**voice_parts, "MQTT_HOST": "127.0.0.1", "TZ": tz,
              "VERDA_INFERENCE_KEY": secrets.get("verda_inference_key", ""),   # Nemotron 3.5 Super VL
              "VISION_URL": "http://127.0.0.1:8091",
              "PLACES_B64": b64z(here / "places-helsinki.txt")}   # fallback place names until the area's list is fetched
-for key in ("llm_model", "whisper_model", "piper_voice", "gemini_model", "gesture_from", "voice_drive", "voice_peak",
+for key in ("llm_model", "whisper_model", "piper_voice", "gemini_model", "gesture_from", "phone_warn", "voice_drive", "voice_peak",
             "translate_model", "tts_model", "tts_voice", "whisper_multi_model", "prefetch_langs", "piper_voices"):   # optional overrides
     if secrets.get(key):
         v = secrets[key]

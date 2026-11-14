@@ -14,9 +14,9 @@ iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.p
 
 | Folder           | Runs on                            | What it does |
 | ---------------- | ---------------------------------- | ------------ |
-| `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker; `hub.py`: Telegram alerts, location, incident report; `voice.py`: voice assistant, translator, cabin watch; `vision.py`: camera buffer and clips; `dash.py`: the safeDrive page for the driver's phone |
+| `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker; `hub.py`: Telegram alerts, location, incident report; `voice.py`: voice assistant, translator, cabin watch; `vision.py`: camera buffer and clips; `dash.py`: the safeDrive page for the driver's phone, and Nemotron's recent verdicts for the UNO Q's live view (`/nemotron`) |
 | `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware for both boards (`project.yaml`: driver, `passenger.yaml`: back seat), flashes each over USB, then streams their output |
-| `unoq-camera/`   | Arduino UNO Q (systemd service + sketch) | `stream.py`: serves the USB camera, the cabin climate (`/climate`) and the on-device people count (`/occupancy`) over HTTP on port 8090; `thermo/thermo.ino`: on the microcontroller, reads the Modulino Thermo and drives the LED matrix |
+| `unoq-camera/`   | Arduino UNO Q (systemd service + sketch) | `stream.py`: serves the USB camera and its live view (with the What NVIDIA Nemotron sees card), the cabin climate (`/climate`) and the on-device people count (`/occupancy`) over HTTP on port 8090; `thermo/thermo.ino`: on the microcontroller, reads the Modulino Thermo and drives the LED matrix |
 | `tools/`         | dev machine                        | `deploy.py` checks an app's web page, deploys the app and waits until it's up; `mqtt_peek.py` watches the broker |
 
 ## Setup
@@ -42,7 +42,7 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 
 Before deploying `unoq-camera` or `jetson-hub`, `deploy.py` checks their web pages (the `PAGE` in `stream.py` and `dash.py`): the page must encode as UTF-8, and its JavaScript must pass `node --check`. Otherwise it stops without deploying and shows the error. Without `node`, only the encoding is checked.
 
-`deploy.py jetson-hub` first checks the hub log and refuses to deploy while an SOS, accident or threat alert from the last 2 minutes hasn't finished sending its clip and incident report, because a restart would drop them. `--check` runs only that check; `--force` deploys anyway.
+`deploy.py jetson-hub` first checks the hub log and refuses to deploy while an SOS, accident, threat or eyes-closed alert from the last 2 minutes hasn't finished sending its clip and incident report, because a restart would drop them. `--check` runs only that check; `--force` deploys anyway.
 
 `deploy.py` runs the app's `make_compose.py`, which generates `compose.yml` with the code and secrets embedded. Then it runs `wendy run --detach` and follows the logs until the app is up. The device defaults to `wendyos-hackathon-device-4.local`; set `WENDY_DEVICE` to override it. Each run's `compose.yml` is generated and holds secrets, so it isn't committed.
 
@@ -96,6 +96,7 @@ Optional keys in `jetson-hub/secrets.json`:
 | `translate_model` | Translator model | `gemini-3.8-flash` |
 | `tts_model`, `tts_voice` | Gemini TTS for varieties with no local voice | `gemini-3.8-flash-tts`, Kore |
 | `gesture_from` | Who can make hand signs: `"any"` (demos at a table) or `"back"` (real car: back seat only, spoken as "From the back seat: ...") | `"any"` |
+| `phone_warn` | Ask the driver to put their phone down when Nemotron sees them using it. Set `false` for a demo where the "driver" holds a phone to show the live view | `true` |
 | `voice_peak` | Peak level of spoken answers; lower it if the sound breaks up | 0.75 |
 | `voice_drive` | Compression of spoken answers (0 = off, 3 = louder but harsher) | 2.0 |
 | `hot_car_c`, `cold_car_c` | Cabin temperature (°C) at or beyond which the car asks for the AC or the heating | 35, 0 |

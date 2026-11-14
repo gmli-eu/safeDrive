@@ -6,7 +6,7 @@
 #                                              and starts the on-device person detector)
 # unoq-camera and jetson-hub first check their web page (PAGE in stream.py / dash.py): UTF-8 and
 # a JavaScript syntax check with node. A broken page stops the deploy.
-# jetson-hub refuses to deploy while an SOS/accident/threat alert is still being sent: a restart
+# jetson-hub refuses to deploy while an SOS/accident/threat/eyes-closed alert is still being sent: a restart
 # kills the photo/clip upload. --check only runs that check; --force deploys anyway.
 import re
 import json, os, pathlib, shutil, subprocess, sys, threading, time
@@ -131,14 +131,14 @@ wendy = shutil.which("wendy") or str(pathlib.Path.home() / ".local/bin/wendy")
 root = pathlib.Path(__file__).resolve().parent.parent / folder
 timeout = float(args[1]) if len(args) > 1 else 600
 def alert_in_flight():
-    # The newest SOS/accident/threat alert in the hub log from the last ALERT_WINDOW s that hasn't
+    # The newest SOS/accident/threat/eyes-closed alert in the hub log from the last ALERT_WINDOW s that hasn't
     # finished sending its photo, clip and Gemini incident report yet ("media done") (send_media in hub.py), or None.
     ALERT_WINDOW = 120
     r = subprocess.run([wendy, "device", "logs", app, "--device", DEVICE, "--no-follow", "--tail", "400"],
                        capture_output=True, text=True, timeout=60)
     start = re.compile(r"MQTT car/atech/accident |MQTT car/atech/button .*'sos'|MQTT car/vision/threat .*'high'"
-                       r"|\b(SOS|accident|threat) (text|location) to")
-    done = re.compile(r"\b(SOS|accident|threat) (media done|failed)|threat ignored")
+                       r"|MQTT car/vision/unresponsive |\b(SOS|accident|threat|unresponsive) (text|location) to")
+    done = re.compile(r"\b(SOS|accident|threat|unresponsive) (media done|failed)|threat ignored|eyes-closed alert ignored")
     busy = None
     for line in r.stdout.splitlines():
         try: rec = json.loads(line)

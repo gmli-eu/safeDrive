@@ -7,6 +7,10 @@
 # - voice.py asks for a spoken message to be sent (car/voice/send) -> Telegram text to mom, dad or both.
 # - the cabin stays too hot or too cold (Modulino Thermo on the Uno Q) -> the car tells the driver
 #   to turn on the AC (or the heating), and the safeDrive page shows a banner. Nothing to the contacts.
+# - Nemotron (voice.py's cabin watch) sees danger to the driver (car/vision/threat) -> silent threat
+#   alert + photo, clip and incident report to everyone. Nothing shows or sounds in the car.
+# - the driver's eyes stay closed or covered for 10 s despite the car's spoken warnings
+#   (car/vision/unresponsive) -> eyes-closed alert + photo, clip and incident report to everyone.
 import base64, collections, json, math, os, pathlib, re, socket, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from concurrent.futures import ThreadPoolExecutor
 import paho.mqtt.client as mqtt
@@ -26,7 +30,7 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 BOTS = json.loads(os.environ.get("TELEGRAM_BOTS") or "[]")
 LIVE_PERIOD = int(os.environ.get("LIVE_PERIOD", "900"))      # seconds the live location stays live
 MAX_FIX_AGE = int(os.environ.get("MAX_FIX_AGE", "1800"))     # ignore phone fixes older than this
-# Emergency alerts (SOS, accident, threat) still send an older fix, up to this age, marked as the
+# Emergency alerts (SOS, accident, threat, eyes closed) still send an older fix, up to this age, marked as the
 # last known position: an old position is better than none.
 LAST_KNOWN_MAX_AGE = int(os.environ.get("LAST_KNOWN_MAX_AGE", str(24 * 3600)))
 FRESH_FIX_AGE = int(os.environ.get("FRESH_FIX_AGE", "60"))   # older than this: ask the phone for a new one
@@ -34,7 +38,7 @@ FIX_WAIT = float(os.environ.get("FIX_WAIT", "30"))           # check-in: how lon
 MOVED_M = float(os.environ.get("MOVED_M", "100"))            # check-in: send the late answer only if it's this far off
 SOS_FIX_WAIT = float(os.environ.get("SOS_FIX_WAIT", "60"))   # SOS with no location at all: keep waiting this long
 EMERGENCY_NUMBER = os.environ.get("EMERGENCY_NUMBER", "112")  # named in the accident alert
-# Camera (vision.py): photo + clip with SOS and accident alerts.
+# Camera (vision.py): photo + clip with every emergency alert.
 VISION_URL = os.environ.get("VISION_URL", "http://127.0.0.1:8091")
 SOS_CLIP_BEFORE, SOS_CLIP_AFTER = 10, 5      # seconds around the SOS long press
 ACCIDENT_COUNTDOWN = 10                      # the board's "ARE YOU OK?" countdown (ACCIDENT_COUNTDOWN_MS)
@@ -268,10 +272,14 @@ def describe_clip(label, clip, detail, start, end, event_at, vlist):
         why = {"crash": "crash: a jolt over 2.5 g", "flip": "flip: turned over 75° and stayed still for 3 s"}.get(detail, f"sensor trigger ({detail or 'unknown'})")
         trigger = f"Accident ({why}), and the driver didn't answer \"ARE YOU OK?\" on the car's screen within 10 s."
         ref_desc = f"the {detail if detail in ('crash', 'flip') else 'impact'} (the 10 s countdown ended at +{ACCIDENT_COUNTDOWN}s)"
+    elif label == "unresponsive":
+        trigger = (f"The driver's eyes stayed {detail} (seen by NVIDIA Nemotron), and the car's spoken warnings didn't change it:"
+                   " they may have fallen asleep or passed out, or something or someone is covering their eyes.")
+        ref_desc = "the alert"
     else:
         trigger, ref_desc = f"Cabin threat seen by NVIDIA Nemotron: {detail or 'unclear'}.", "the threat frame"
     verdict_lines = "\n".join(f"  {v['captured_at'] - ref:+.1f}s: level={v.get('level')} people={v.get('people')} "
-                              f"sign={v.get('instruction')} what={v.get('what')!r}" for v in vlist) or "  none in this window"
+                              f"neck={v.get('neck')} eyes={v.get('eyes')} phone={v.get('phone')} sign={v.get('instruction')} what={v.get('what')!r}" for v in vlist) or "  none in this window"
     video = (f"Cabin clip attached, {time.strftime('%H:%M:%S', time.localtime(start))}-{time.strftime('%H:%M:%S', time.localtime(end))}."
              if clip else "No cabin video is available (camera off or unavailable): say there is no video.")
     parts = [{"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(clip).decode()}}] if clip else []
@@ -483,6 +491,24 @@ def send_threat(what, at):
     send_alert("threat", head, tail, "car/vision/threat/result",
                media=(at - THREAT_CLIP_BEFORE, at + THREAT_CLIP_AFTER), detail=what, event_at=at)
 
+# Driver's eyes closed for EYES_ALERT_S in voice.py, despite the car's spoken warnings (car/vision/unresponsive).
+# Not silent: the car has already spoken, and calling the driver may wake them.
+UNRESPONSIVE_COOLDOWN = 120
+UNRESPONSIVE_CLIP_BEFORE, UNRESPONSIVE_CLIP_AFTER = 15, 5
+last_unresponsive = 0.0
+
+def send_unresponsive(closed_s, how, at):
+    # how: "closed" or "covered" (hands, an object or a hood over the eyes), as Nemotron last saw it
+    why = ("They may have fallen asleep or passed out." if how == "closed" else
+           "Something is over their eyes (hands, an object or a hood): they can't see the road, or someone is covering them.")
+    head = (f"🚨 SafeDrive: the driver's eyes have been {how} for {closed_s:.0f} s, and they didn't react when the car "
+            f"spoke to them. {why}\n"
+            "This is automatic image recognition and can be wrong: check the photo and clip below.\n")
+    tail = ("\n\n👉 Call the driver now: a ringing phone may wake them. If they don't answer, call emergency services "
+            f"({EMERGENCY_NUMBER}) and give them this location.")
+    send_alert("unresponsive", head, tail, "car/vision/unresponsive/result",
+               media=(at - UNRESPONSIVE_CLIP_BEFORE, at + UNRESPONSIVE_CLIP_AFTER), detail=f"{how} for {closed_s:.0f} s", event_at=at)
+
 # ---------- too hot or too cold inside: Modulino Thermo ----------
 # Heat (and cold) wears on a driver's attention, and hits children, older passengers and pets hardest.
 # When the cabin stays at or above HOT_CAR_C (or at or below COLD_CAR_C) for CABIN_HOLD_S, the car
@@ -666,7 +692,7 @@ def on_connect(c, userdata, flags, rc, props=None):
     set_mode("idle")
 
 def on_message(c, userdata, m):
-    global fix, last_threat
+    global fix, last_threat, last_unresponsive
     # voice.py's own traffic (audio is binary), and Nemotron's verdict every few seconds (logged by voice.py)
     if m.topic.startswith(("car/atech/voice/", "car/passenger/voice/")) or m.topic == "car/voice/send/result": return
     if m.topic == "car/vision/sending":
@@ -710,6 +736,15 @@ def on_message(c, userdata, m):
         except (TypeError, ValueError): at = time.time()
         if time.time() - at > 30: at = time.time()   # a stale timestamp would ask for frames already dropped
         threading.Thread(target=send_threat, args=(str(data.get("what", ""))[:200], at), daemon=True).start()
+    elif m.topic == "car/vision/unresponsive" and isinstance(data, dict):
+        if time.time() - last_unresponsive < UNRESPONSIVE_COOLDOWN:
+            log(f"eyes-closed alert ignored: last one {time.time() - last_unresponsive:.0f}s ago"); return
+        last_unresponsive = time.time()
+        try: at = min(float(data.get("captured_at") or 0), time.time()) or time.time()
+        except (TypeError, ValueError): at = time.time()
+        if time.time() - at > 30: at = time.time()
+        set_mode("alerting")
+        threading.Thread(target=send_unresponsive, args=(float(data.get("closed_s") or 0), "covered" if data.get("eyes") == "covered" else "closed", at), daemon=True).start()
     elif m.topic == "car/atech/checkin" and isinstance(data, dict):
         threading.Thread(target=send_checkin, args=(data.get("to"),), daemon=True).start()
     elif m.topic == "car/voice/send" and isinstance(data, dict):

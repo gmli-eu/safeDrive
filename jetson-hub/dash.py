@@ -5,7 +5,10 @@
 #   voice.py --MQTT car/nav/destination (retained)--> this page --live push (SSE)--> phone
 #   The page then shows a big "Go to ..." button. One tap opens Google Maps (or Waze) with the route.
 # Nothing opens by itself: iOS only lets a page open another app from a tap.
-import os, subprocess, sys, shutil
+# GET /nemotron: the cabin watch's recent verdicts as JSON, for the "What Nemotron sees" panel on the
+#   UNO Q's live view (unoq-camera/stream.py; CORS-open, since that page comes from the UNO Q). They
+#   never go to the driver's page: a threat alert is silent in the car.
+import collections, os, subprocess, sys, shutil
 
 # paho-mqtt is pure Python: installed once into the data volume and run from there (same as hub.py).
 SITE = "/data/site-paho-mqtt-2.1.0"
@@ -27,7 +30,11 @@ TOPICS = {"car/nav/destination": "destination", "car/vision/camera": "camera",  
           "car/cabin/climate": "climate", "car/cabin/comfort": "comfort",
           "car/cabin/occupancy": "occupancy"}   # not retained: every 2 s from the hub
 
+NEMO_TOPICS = ("car/vision/nemotron", "car/vision/said", "car/vision/camera")   # voice.py's cabin watch
+
 def log(*a): print(time.strftime("%H:%M:%S"), "[dash]", *a, flush=True)
+
+nemo = {"recent": collections.deque(maxlen=60), "camera": None}   # newest verdicts, for GET /nemotron
 
 state = {"destination": None, "camera": None, "climate": None, "comfort": None, "occupancy": None}
 version = 0
@@ -35,17 +42,40 @@ changed = threading.Condition()
 
 def on_connect(c, userdata, flags, rc, props=None):
     log("MQTT connected", rc)
-    c.subscribe([(t, 1) for t in TOPICS])
+    c.subscribe([(t, 1) for t in {*TOPICS, *NEMO_TOPICS}])
 
 def on_message(c, userdata, m):
     global version
     try: data = json.loads(m.payload.decode() or "null")
     except Exception: return
+    if m.topic in NEMO_TOPICS: nemo_message(m.topic, data)
+    if m.topic not in TOPICS: return
     with changed:
         state[TOPICS[m.topic]] = data
         version += 1
         changed.notify_all()
     if m.topic == "car/nav/destination" and data: log("destination:", data.get("name"), "|", data.get("address"))
+
+def nemo_message(topic, data):
+    if not isinstance(data, dict): return
+    with changed:
+        if topic == "car/vision/camera": nemo["camera"] = data.get("state")
+        elif topic == "car/vision/nemotron":
+            r = nemo["recent"]
+            if not (r and r[-1].get("captured_at") == data.get("captured_at")):   # the retained copy after a reconnect
+                r.append({**data, "at": time.time()})
+        elif topic == "car/vision/said":   # the car spoke a sign: mark the verdict it came from
+            for v in reversed(nemo["recent"]):
+                if v.get("captured_at") == data.get("captured_at"): v["said"] = data.get("text"); break
+
+def nemo_json():
+    with changed: recent, cam = [dict(v) for v in nemo["recent"]], nemo["camera"]
+    now = time.time()
+    minute = [v for v in recent if now - v["at"] < 60]
+    took = sorted(v.get("took_s") or 0 for v in minute)
+    return {"now": now, "camera": cam, "model": (recent[-1].get("model") if recent else None),
+            "per_min": len(minute), "median_s": took[len(took) // 2] if took else None,
+            "recent": recent[-8:][::-1]}   # newest first
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -192,6 +222,11 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         self.wfile.write(b": ping\n\n")
                     self.wfile.flush()
+            elif self.path.split("?")[0] == "/nemotron":
+                body = json.dumps(nemo_json()).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*"); self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
             elif self.path == "/health":
                 body = json.dumps({"ok": True, **state}).encode()
                 self.send_response(200); self.send_header("Content-Type", "application/json")

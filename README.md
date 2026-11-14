@@ -65,6 +65,7 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 - `voice.py` sends Nemotron 3.5 Super VL (Verda endpoint, `VERDA_INFERENCE_KEY` in `.env` or `verda_inference_key` in `jetson-hub/secrets.json`) a burst of 3 camera frames from the last 1.5 s, downscaled to 640 px, one request at a time, as fast as the endpoint answers (a few seconds when it isn't busy).
 - It judges two things. **Danger to the driver**: only a weapon, hitting or restraining the driver, or grabbing the wheel, gear lever or handbrake counts as danger. That goes to `hub.py` (`car/vision/threat`), which alerts every linked chat silently like SOS, with photo and clip; nothing shows or sounds in the car. A blocked view or covered eyes is only logged. **Back-seat hand signs** (volume down/up, slower, faster, thank you, need a break, all good): spoken to the driver ("From the back seat: ...") after two identical answers in a row, never acted on.
 - Every verdict is published, retained, on `car/vision/nemotron`; the Gemini agent can read the latest one ("is everything OK in the back?").
+- If the camera can't see (the picture is almost uniformly black: lid closed, lens blocked, or a dark cabin at night, since the camera has no infrared) or sends nothing, Nemotron isn't asked, and the board's screen shows a crossed-out camera icon in the top-right corner until the picture is back (`car/vision/camera`, retained: `ok`, `dark` or `off`).
 
 ## Check-in menu (screen on ports 1-2, knob on ports 13-14)
 

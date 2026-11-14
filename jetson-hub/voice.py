@@ -593,20 +593,39 @@ def camera_frames():
     with urllib.request.urlopen(VISION_URL + "/photo.jpg", timeout=5) as r:
         return [shrink(r.read())], float(r.headers.get("X-Captured-At") or time.time())
 
+# Camera state for the board's screen (a crossed-out webcam icon when not "ok"), retained:
+# "ok", "dark" (the picture is almost uniformly black: lid closed, lens blocked, or a dark cabin at night;
+# the camera has no infrared, so Nemotron couldn't see anything either) or
+# "off" (no frames: camera unplugged or the Uno Q down). Nemotron isn't asked while it's not "ok".
+DARK_MEAN, DARK_SPREAD = 20, 12          # 0-255 brightness: a closed lid gives about 0-5, a dark car at night more texture
+cam_state = None
+
+def covered(jpg):
+    import io
+    from PIL import Image, ImageStat
+    st = ImageStat.Stat(Image.open(io.BytesIO(jpg)).convert("L"))
+    return st.mean[0] < DARK_MEAN and st.stddev[0] < DARK_SPREAD
+
+def camera_state(state, why=""):
+    global cam_state
+    if state == cam_state: return
+    cam_state = state
+    log(f"camera {state}" + (f": {why}" if why else "") + ("" if state == "ok" else ", Nemotron paused"))
+    client.publish("car/vision/camera", json.dumps({"state": state}), qos=1, retain=True)
+
 def watch_loop():
     import base64
     if not VERDA_KEY:
         log("Nemotron off: no VERDA_INFERENCE_KEY"); return
-    camera_off = False
     prev_gesture, spoken_gesture = "none", None
     while True:
         try:
             try: frames, captured = camera_frames()
             except (urllib.error.HTTPError, OSError) as e:
-                if not camera_off: log("Nemotron watch paused: no camera frame:", e)
-                camera_off = True; time.sleep(5); continue
-            if time.time() - captured > MAX_FRAME_AGE_S: time.sleep(2); continue
-            if camera_off: log("Nemotron watch: camera back"); camera_off = False
+                camera_state("off", e); time.sleep(5); continue
+            if time.time() - captured > MAX_FRAME_AGE_S: camera_state("off", "frames too old"); time.sleep(2); continue
+            if covered(frames[-1]): camera_state("dark"); time.sleep(2); continue   # no point asking about a black frame
+            camera_state("ok")
             t = time.time()
             intro = (f"{len(frames)} frames from the last {WATCH_SPAN_S} s, oldest first, newest last. Judge what is happening now"
                      " (the newest frame), using the earlier ones to see movement." if len(frames) > 1 else "One frame.")

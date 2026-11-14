@@ -143,6 +143,20 @@ code:
       menuDirty = true;
     }
 
+    // Camera watch state from the hub (car/vision/camera, retained): when the camera can't see
+    // (dark) or is off, a crossed-out camera icon sits in the top-right corner of every screen.
+    bool cameraBlind = false;
+
+    void drawCameraOff() {
+      int16_t x = screen.width() - 16, y = 1;
+      screen.fillRect(x - 1, y - 1, 17, 12, ATECH_BG);                        // keep it readable over a title
+      screen.drawRoundRect(x + 1, y + 2, 9, 7, 2, ATECH_MUTED);              // camera body
+      screen.fillCircle(x + 5, y + 5, 1, ATECH_MUTED);                       // lens
+      screen.fillTriangle(x + 10, y + 5, x + 14, y + 2, x + 14, y + 8, ATECH_MUTED);   // video-camera snout
+      screen.drawLine(x, y + 10, x + 14, y, ATECH_ALERT);                    // the slash
+      screen.drawLine(x + 1, y + 10, x + 15, y, ATECH_ALERT);
+    }
+
     void drawMenu() {
       menuDirty = false;
       int16_t w = screen.width();
@@ -173,6 +187,7 @@ code:
           screen.displayText(menuItem(i), 8, y + (rowH - 2 - 8 * size) / 2, size, ATECH_FG);
         }
       }
+      if (cameraBlind) drawCameraOff();
       screen.display();
     }
 
@@ -369,6 +384,9 @@ code:
         onAccidentResult(p);
       } else if (t == "car/atech/voice/stop") {
         voiceStop("hub");                    // the hub heard the driver finish
+      } else if (t == "car/vision/camera") {
+        bool blind = p.indexOf("\"ok\"") < 0;   // {"state": "ok" | "dark" | "off"}
+        if (blind != cameraBlind) { cameraBlind = blind; menuDirty = true; }
       } else if (t == "car/atech/voice/status") {
         onVoiceStatus(p);
       }
@@ -440,6 +458,7 @@ code:
               mqtt.subscribe("car/atech/voice/pcm");
               mqtt.subscribe("car/atech/voice/stop");
               mqtt.subscribe("car/atech/voice/status");
+              mqtt.subscribe("car/vision/camera");
               logLine("mqtt: connected");
             } else {
               logLine("mqtt: connect failed");

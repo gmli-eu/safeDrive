@@ -46,7 +46,7 @@
         "NODE_OPTIONS": "--max-old-space-size=4096",
         "CLAUDE_CONFIG_DIR": "/home/node/.claude",
         "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
-        "GEMINI_CLI_SYSTEM_DEFAULTS_PATH": "/workspace/.gemini/settings.json"
+        "GEMINI_CLI_TRUST_WORKSPACE": "true"
     },
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
     "workspaceFolder": "/workspace"

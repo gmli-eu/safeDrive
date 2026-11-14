@@ -1,5 +1,6 @@
 # Runs on the Arduino UNO Q: serves the USB camera's own MJPEG frames over HTTP, without
 # re-encoding (v4l2-ctl reads the camera, this splits the stream into JPEGs). Standard library only.
+#   GET /              live view: the preview, on-device person boxes, the Thermo reading, hand-sign guide
 #   GET /stream.mjpg   live multipart MJPEG at full FPS (for the Jetson)
 #   GET /preview.mjpg  live multipart MJPEG capped at ~2.5 fps (for browsers: spares 2.4 GHz Wi-Fi)
 #   GET /frame.jpg     newest frame, 503 if none in the last 2 s
@@ -223,10 +224,13 @@ PAGE = """<!doctype html>
   .stage { flex:1; min-width:0; position:relative; display:flex; align-items:center; justify-content:center; background:#000; }
   .feed { width:100%; height:100%; object-fit:contain; display:block; }
   .boxes { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
-  .edge { position:absolute; left:14px; bottom:max(14px, env(safe-area-inset-bottom)); z-index:10; padding:8px 13px;
+  .badges { position:absolute; left:14px; bottom:max(14px, env(safe-area-inset-bottom)); z-index:10;
+    display:flex; flex-direction:column; align-items:flex-start; gap:6px; }
+  .edge { padding:8px 13px;
     border-radius:999px; background:rgba(11,15,20,.82); border:1px solid rgba(255,255,255,.16); font-size:13px;
     backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
   .edge b { color:#4ade80; }
+  .edge.hot b { color:#f87171; }
   .menu-btn { position:absolute; top:max(14px, env(safe-area-inset-top)); right:14px; z-index:10;
     display:inline-flex; align-items:center; gap:8px; padding:10px 15px; border-radius:999px;
     border:1px solid rgba(255,255,255,.16); background:rgba(11,15,20,.82); color:var(--fg);
@@ -269,7 +273,10 @@ PAGE = """<!doctype html>
   <div class="stage">
     <img class="feed" id="feed" src="/preview.mjpg" alt="SafeDrive live camera">
     <canvas class="boxes" id="boxes"></canvas>
-    <div class="edge" id="edge">On-device AI: starting...</div>
+    <div class="badges">
+      <div class="edge" id="thermo" hidden></div>
+      <div class="edge" id="edge">On-device AI: starting...</div>
+    </div>
     <button class="menu-btn" id="menuBtn" type="button" aria-expanded="false" aria-controls="drawer">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M18 11V6a2 2 0 0 0-4 0v4"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/>
@@ -385,6 +392,18 @@ PAGE = """<!doctype html>
     }).catch(function () {});
   }
   setInterval(poll, 1000); poll();
+  // Cabin climate from the Modulino Thermo, read by this board's microcontroller.
+  var thermo = document.getElementById("thermo");
+  function pollThermo() {
+    if (document.hidden) return;
+    fetch("/climate", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (c) {
+      thermo.hidden = c.celsius == null;
+      if (c.celsius == null) return;
+      thermo.className = "edge" + (c.celsius >= 35 || c.celsius <= 0 ? " hot" : "");
+      thermo.innerHTML = "\U0001F321\ufe0f Modulino Thermo: <b>" + c.celsius.toFixed(1) + " \u00b0C</b> \u00b7 " + c.humidity + " % humidity";
+    }).catch(function () {});
+  }
+  setInterval(pollThermo, 2000); pollThermo();
   document.addEventListener("visibilitychange", function () {
     document.getElementById("feed").src = document.hidden ? "" : "/preview.mjpg";
   });

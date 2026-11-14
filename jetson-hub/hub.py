@@ -64,6 +64,13 @@ fix_arrived = threading.Event()   # set on every new phone fix (see wait_for_fix
 verdicts = collections.deque(maxlen=200)   # recent car/vision/nemotron dicts (last VERDICT_WINDOW s)
 climate = {}          # newest cabin reading: dict(celsius, humidity, at)
 occupancy = {}        # newest on-device person count: dict(people, empty_for_s, at)
+nemotron_io = {"sent": 0.0, "answered": 0.0}   # when voice.py last sent frames to Nemotron / got a verdict
+
+def cloud_active():
+    # Frames are going to Nemotron: one was sent in the last 5 s, or a request is still waiting for
+    # its answer. Shown on the UNO Q's LED matrix (cloud icon) and in green on the pages.
+    now, io = time.time(), nemotron_io
+    return now - io["sent"] < 5 or (io["sent"] > io["answered"] and now - io["sent"] < 300)
 
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
 
@@ -523,11 +530,13 @@ def occupancy_loop():
     last_people, last_err = -1, None
     while True:
         try:
-            with urllib.request.urlopen(OCCUPANCY_URL, timeout=5) as r: d = json.load(r)
+            # ?cloud= tells the Uno Q whether frames are going to Nemotron (for its LED matrix).
+            with urllib.request.urlopen(f"{OCCUPANCY_URL}?cloud={int(cloud_active())}", timeout=5) as r: d = json.load(r)
             people = d.get("people")
             occupancy.update(people=people, empty_for_s=float(d.get("empty_for_s") or 0), confidence=d.get("confidence"), at=time.time())
             publish("car/cabin/occupancy", {"people": people, "empty_for_s": occupancy["empty_for_s"],
-                                            "confidence": d.get("confidence"), "error": d.get("error"), "at": round(time.time(), 1)})
+                                            "confidence": d.get("confidence"), "error": d.get("error"),
+                                            "cloud": cloud_active(), "at": round(time.time(), 1)})
             if people != last_people: log("cabin occupancy (on-device):", people if people is not None else d.get("error"))
             last_people, last_err = people, None
         except Exception as e:
@@ -660,7 +669,10 @@ def on_message(c, userdata, m):
     global fix, last_threat
     # voice.py's own traffic (audio is binary), and Nemotron's verdict every few seconds (logged by voice.py)
     if m.topic.startswith(("car/atech/voice/", "car/passenger/voice/")) or m.topic == "car/voice/send/result": return
+    if m.topic == "car/vision/sending":
+        nemotron_io["sent"] = time.time(); return
     if m.topic == "car/vision/nemotron":
+        nemotron_io["answered"] = time.time()
         try:
             v = json.loads(m.payload.decode())
             ts = float(v["captured_at"])

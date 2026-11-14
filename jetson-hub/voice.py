@@ -1349,6 +1349,7 @@ def watch_loop():
             if covered(frames[-1]): camera_state("dark"); time.sleep(2); continue   # no point asking about a black frame
             camera_state("ok")
             t = time.time(); last_ask = time.monotonic()
+            client.publish("car/vision/sending", json.dumps({"at": round(t, 2)}))   # frames leaving the car: the UNO Q shows it
             intro = (f"{len(frames)} frames from the last {WATCH_SPAN_S} s, oldest first, newest last. Judge danger on the newest frame,"
                      " and count a hand sign if it is clearly made across the frames (moving signs like thank_you, volume_down, volume_up"
                      " or faster may start in an earlier frame and move down by the last)." if len(frames) > 1 else "One frame.")

@@ -16,7 +16,7 @@ iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.p
 | ---------------- | ---------------------------------- | ------------ |
 | `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker; `hub.py`: Telegram alerts, location, incident report; `voice.py`: voice assistant, translator, cabin watch; `vision.py`: camera buffer and clips; `dash.py`: the safeDrive page for the driver's phone |
 | `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware for both boards (`project.yaml`: driver, `passenger.yaml`: back seat), flashes each over USB, then streams their output |
-| `unoq-camera/`   | Arduino UNO Q (systemd service + sketch) | `stream.py`: serves the USB camera, the cabin climate (`/climate`) and the on-device people count (`/occupancy`) over HTTP on port 8090; `thermo/thermo.ino`: reads the Modulino Thermo on the microcontroller |
+| `unoq-camera/`   | Arduino UNO Q (systemd service + sketch) | `stream.py`: serves the USB camera, the cabin climate (`/climate`) and the on-device people count (`/occupancy`) over HTTP on port 8090; `thermo/thermo.ino`: on the microcontroller, reads the Modulino Thermo and drives the LED matrix |
 | `tools/`         | dev machine                        | `deploy.py` deploys an app and waits until it's up; `mqtt_peek.py` watches the broker |
 
 ## Setup
@@ -62,7 +62,7 @@ The first start of `jetson-hub` downloads about 8 GB (Ollama image, Gemma, Whisp
 
 ## Cabin climate (Modulino Thermo)
 
-- Plug the Modulino Thermo into the Uno Q's Qwiic connector. The sketch `unoq-camera/thermo/thermo.ino` runs on the microcontroller and answers `thermo_read` through the Arduino router; `stream.py` asks it every 2 s over `/var/run/arduino-router.sock` and serves `http://172.20.10.4:8090/climate`.
+- Plug the Modulino Thermo into the Uno Q's Qwiic connector. The sketch `unoq-camera/thermo/thermo.ino` runs on the microcontroller and answers `thermo_read` through the Arduino router (it also offers `matrix_show` for the LED matrix, see below); `stream.py` asks it every 2 s over `/var/run/arduino-router.sock` and serves `http://172.20.10.4:8090/climate`.
 - `deploy.py unoq-camera` installs the `Arduino_Modulino` and `Arduino_RouterBridge` libraries on the Uno Q if they're missing, then builds and flashes the sketch with `arduino-cli`, only when it changed (`~/safedrive-camera/thermo/.flashed` holds the hash of the last flash).
 - If `/climate` reports `"Modulino Thermo not found"`, check the cable; the sketch looks for the sensor again every 2 s. If it reports a router error, the sketch isn't running: delete `.flashed` on the Uno Q and deploy again.
 - The hub reads `/climate` next to `camera_url` (override with `climate_url`) and publishes `car/cabin/climate` (retained).
@@ -73,6 +73,7 @@ The first start of `jetson-hub` downloads about 8 GB (Ollama image, Gemma, Whisp
 - `stream.py` posts the newest frame to it about once a second and serves `http://172.20.10.4:8090/occupancy`: `people` (boxes at 0.5 or more), `confidence`, `empty_for_s`, `boxes` (0-1, relative to the frame) and `ms`. `people` is `null` while the picture is too dark or the detector isn't answering.
 - The hub polls it every 2 s and publishes `car/cabin/occupancy` (override the address with `occupancy_url`). `voice.py` slows Nemotron to one check every 15 s after 10 s of an empty cabin (`EMPTY_PAUSE_S`, `WATCH_EMPTY_INTERVAL_S`).
 - Logs: `docker logs safedrive-people` on the Uno Q.
+- **LED matrix**: `matrix_loop` in `stream.py` calls the sketch's `matrix_show(people, cloud)` through the router when the count or the cloud state changes (and every 10 s). The cloud state comes from the hub's poll (`/occupancy?cloud=1`): `voice.py` publishes `car/vision/sending` for each Nemotron request, and the hub counts frames as "going to the cloud" for 5 s after each, or while a request waits for its answer. Matrix changes are logged as `matrix: 2 + cloud`.
 
 ## Configuration
 

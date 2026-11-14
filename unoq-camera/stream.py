@@ -7,7 +7,8 @@
 #   GET /health        JSON: fps, age of the newest frame, camera, size, dark (frames near-black)
 #   GET /icons/*.png   hand-sign guide icons shown in the live view's menu
 #   GET /climate       JSON: cabin temperature and humidity from the Modulino Thermo (see thermo/)
-#   GET /occupancy     JSON: people in the cabin, counted on this board by an Edge Impulse model
+#   GET /occupancy     JSON: people in the cabin, counted on this board by an Edge Impulse model.
+#                      The hub adds ?cloud=1 (or 0) when frames are (or aren't) going to Nemotron.
 # Every frame carries X-Captured-At-Unix-Ns, as Wendy's camera sharing expects.
 import glob, json, os, pathlib, socket, struct, subprocess, threading, time, urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -103,7 +104,11 @@ climate = {"celsius": None, "humidity": None, "at": 0.0, "error": "no reading ye
 
 def mp_pack(o):
     if isinstance(o, list): return bytes([0x90 | len(o)]) + b"".join(mp_pack(x) for x in o)
-    if isinstance(o, int): return bytes([o]) if 0 <= o < 128 else b"\xce" + struct.pack(">I", o)
+    if isinstance(o, bool): return b"\xc3" if o else b"\xc2"          # before int: a bool is an int
+    if isinstance(o, int):
+        if 0 <= o < 128: return bytes([o])
+        if -32 <= o < 0: return struct.pack(">b", o)                    # negative fixint
+        return b"\xd2" + struct.pack(">i", o)
     b = o.encode(); return bytes([0xa0 | len(b)]) + b if len(b) < 32 else b"\xd9" + bytes([len(b)]) + b
 
 def mp_unpack(b, i=0):
@@ -124,10 +129,13 @@ def mp_unpack(b, i=0):
         n = struct.calcsize(fixed[t]); return struct.unpack(fixed[t], b[i+1:i+1+n])[0], i + 1 + n
     raise ValueError(f"MessagePack type {t:#x} not handled")
 
-def thermo_read(msgid):
+def thermo_read(msgid): return router_call(msgid, "thermo_read", [])
+
+def router_call(msgid, method, params):
+    # One MessagePack-RPC request to a function the sketch offers, through the Arduino router.
     with socket.socket(socket.AF_UNIX) as s:
         s.settimeout(3); s.connect(ROUTER_SOCK)
-        s.sendall(mp_pack([0, msgid, "thermo_read", []]))
+        s.sendall(mp_pack([0, msgid, method, params]))
         buf = b""
         while True:
             chunk = s.recv(4096)
@@ -200,12 +208,37 @@ def occupancy_loop():
             last_error, last_people = str(e), -1
         time.sleep(max(0.2, 1.0 - (time.time() - t0)))
 
+# ---------- the board's LED matrix: people count + cloud icon (drawn by the sketch) ----------
+# The hub says with each /occupancy poll whether frames are going to Nemotron (?cloud=1). The sketch
+# shows the on-device count (or "?" when it can't tell) and a cloud icon while frames go to the cloud.
+cloud = {"active": None, "at": 0.0}
+
+def cloud_now():
+    return cloud["active"] if time.time() - cloud["at"] < 10 else None   # None: the hub hasn't said lately
+
+def matrix_loop():
+    shown, last_sent, msgid, last_error = None, 0.0, 0, None
+    while True:
+        o = occupancy_json()
+        want = (-1 if o["people"] is None else min(o["people"], 9), bool(cloud_now()))
+        if want != shown or time.time() - last_sent > 10:   # resent now and then: the sketch may have restarted
+            msgid = msgid % 1000 + 1
+            try:
+                router_call(msgid, "matrix_show", list(want))
+                if want != shown: log(f"matrix: {'?' if want[0] < 0 else want[0]}{' + cloud' if want[1] else ''}")
+                shown, last_sent, last_error = want, time.time(), None
+            except Exception as e:
+                if str(e) != last_error: log("matrix:", e)
+                last_error = str(e)
+        time.sleep(0.5)
+
 def occupancy_json():
     o, now = occupancy, time.time()
     fresh = o["people"] is not None and now - o["at"] < 10
     return {"people": o["people"] if fresh else None, "confidence": o["confidence"] if fresh else None,
             "empty_for_s": round(now - o["empty_since"], 1) if fresh and o["empty_since"] else 0.0,
             "boxes": o["boxes"] if fresh else [], "ms": o["ms"], "model": "Edge Impulse YOLOX-nano (on-device)",
+            "cloud": cloud_now(),
             "error": None if fresh else (o["error"] or "detection too old")}
 
 ICON_DIR = pathlib.Path(__file__).resolve().parent / "icons"
@@ -230,6 +263,8 @@ PAGE = """<!doctype html>
     border-radius:999px; background:rgba(11,15,20,.82); border:1px solid rgba(255,255,255,.16); font-size:13px;
     backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
   .edge b { color:#4ade80; }
+  .edge b.cloud { color:#76B900; }   /* NVIDIA green: frames are going to Nemotron */
+  .edge b.local { color:#00979D; }   /* Arduino teal-blue: everything stays on the UNO Q */
   .edge.hot b { color:#f87171; }
   .menu-btn { position:absolute; top:max(14px, env(safe-area-inset-top)); right:14px; z-index:10;
     display:inline-flex; align-items:center; gap:8px; padding:10px 15px; border-radius:999px;
@@ -388,7 +423,9 @@ PAGE = """<!doctype html>
     fetch("/occupancy", {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (o) {
       drawBoxes(o);
       edge.innerHTML = o.people == null ? "On-device AI (Arduino UNO Q): " + (o.error || "paused")
-        : "On-device AI (Arduino UNO Q): <b>" + o.people + (o.people === 1 ? " person" : " people") + "</b> \u00b7 " + o.ms + " ms";
+        : "On-device AI (Arduino UNO Q): <b class='" + (o.cloud ? "cloud" : "local") + "'>" + o.people
+          + (o.people === 1 ? " person" : " people") + "</b> \u00b7 " + (o.cloud ? "frames going to NVIDIA Nemotron" : "nothing sent to the cloud")
+          + " \u00b7 detection " + o.ms + " ms on-device";
     }).catch(function () {});
   }
   setInterval(poll, 1000); poll();
@@ -452,6 +489,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
         elif path == "/occupancy":
+            q = self.path.partition("?")[2]
+            if "cloud=" in q: cloud.update(active=q.split("cloud=")[1][:1] == "1", at=time.time())
             body = json.dumps(occupancy_json()).encode()
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
@@ -480,5 +519,6 @@ class Handler(BaseHTTPRequestHandler):
 threading.Thread(target=capture_loop, daemon=True).start()
 threading.Thread(target=climate_loop, daemon=True).start()
 threading.Thread(target=occupancy_loop, daemon=True).start()
+threading.Thread(target=matrix_loop, daemon=True).start()
 ThreadingHTTPServer.daemon_threads = True
 ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

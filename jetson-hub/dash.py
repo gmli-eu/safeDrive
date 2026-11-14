@@ -24,11 +24,12 @@ import paho.mqtt.client as mqtt
 MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DASH_PORT", "8092"))
 TOPICS = {"car/nav/destination": "destination", "car/vision/camera": "camera",   # retained, so a new page gets them at once
-          "car/cabin/climate": "climate", "car/cabin/comfort": "comfort"}
+          "car/cabin/climate": "climate", "car/cabin/comfort": "comfort",
+          "car/cabin/occupancy": "occupancy"}   # not retained: every 2 s from the hub
 
 def log(*a): print(time.strftime("%H:%M:%S"), "[dash]", *a, flush=True)
 
-state = {"destination": None, "camera": None, "climate": None, "comfort": None}
+state = {"destination": None, "camera": None, "climate": None, "comfort": None, "occupancy": None}
 version = 0
 changed = threading.Condition()
 
@@ -86,7 +87,7 @@ PAGE = """<!doctype html>
   [hidden] { display:none !important; }
 </style></head>
 <body>
-<header><h1>SafeDrive</h1><span class="pill" id="climate" hidden></span><span class="pill"><span class="dot" id="dot"></span><span id="conn">connecting</span></span></header>
+<header><h1>SafeDrive</h1><span class="pill" id="people" hidden></span><span class="pill" id="climate" hidden></span><span class="pill"><span class="dot" id="dot"></span><span id="conn">connecting</span></span></header>
 <div class="comfort" id="comfort" role="status" hidden></div>
 <main>
   <section id="idle" class="idle" hidden><b>Ready</b>Ask the car for directions, for example<br>"Hey car, directions to Kamppi".</section>
@@ -129,6 +130,14 @@ function render() {
   if (cOk) {
     cEl.textContent = "\U0001F321\ufe0f " + Math.round(c.celsius) + " \u00b0C \u00b7 " + Math.round(c.humidity) + " %";
     cEl.style.color = c.celsius >= 35 || c.celsius <= 0 ? "var(--warn)" : "";
+  }
+  // People counted on the Arduino UNO Q: NVIDIA green while frames go to Nemotron, Arduino blue while local.
+  var o = state.occupancy, pEl = document.getElementById("people");
+  pEl.hidden = !(o && o.people != null && Date.now() / 1000 - (o.at || 0) < 30);
+  if (!pEl.hidden) {
+    pEl.textContent = "\U0001F464 " + o.people;
+    pEl.style.color = o.cloud ? "#76B900" : "#00979D";
+    pEl.title = o.cloud ? "Frames are going to NVIDIA Nemotron" : "Everything stays on the Arduino UNO Q";
   }
   var k = state.comfort && state.comfort.state, bEl = document.getElementById("comfort");
   bEl.hidden = !(cOk && (k === "hot" || k === "cold"));

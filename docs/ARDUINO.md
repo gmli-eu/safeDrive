@@ -31,6 +31,8 @@ The Arduino UNO Q is safeDrive's dedicated vision, climate, and edge-AI node. It
 ### STM32U585 microcontroller: Modulino Thermo over Qwiic and Router Bridge
 A **Modulino Thermo** is plugged into the UNO Q's Qwiic connector (`Wire1`). The sketch `unoq-camera/thermo/thermo.ino` runs on the STM32U585 microcontroller and reads temperature and relative humidity every 2 s using the `Arduino_Modulino` library. If the sensor is unplugged or returns an out-of-range reading, the sketch automatically re-initializes it on the next 2 s tick.
 
+The same sketch also drives the UNO Q's built-in **LED matrix** (8 × 13, `Arduino_LED_Matrix`): it offers `matrix_show(people, cloud)`, which Linux calls through the router. The matrix shows the on-device people count as a digit ("?" when it can't tell) and a cloud icon while camera frames are going to Nemotron in the cloud. So data flows both ways between the two processors: sensor readings up, display commands down.
+
 The microcontroller exposes a `thermo_read` RPC method to the Linux side through `Arduino_RouterBridge` (`Bridge.provide("thermo_read", thermo_read)`), returning the temperature in °C, humidity in %, and the reading age in milliseconds as a comma-separated string. Whenever `thermo.ino` changes, `tools/deploy.py unoq-camera` compiles and flashes the sketch directly on the UNO Q using `arduino-cli`.
 
 ### Linux side: USB camera server, exposure recovery, and RPC client
@@ -42,7 +44,7 @@ On the Linux side, `unoq-camera/stream.py` runs as a systemd service (`unoq-came
 ### On-device Edge AI: YOLOX-nano person detection and two-tier AI architecture
 `tools/deploy.py unoq-camera` starts Arduino's Edge Impulse model runner container (`ghcr.io/arduino/app-bricks/ei-models-runner:0.5.0`, shipped with Arduino App Lab) as a Docker container named `safedrive-people`, serving the **YOLOX-nano** model (`/models/ootb/ei/yolo-x-nano.eim`) on `127.0.0.1:1340`.
 
-In `stream.py`, `occupancy_loop` posts the newest camera frame to `http://127.0.0.1:1340/api/image` about once per second (~0.5 s per frame, ~180 MB of RAM, completely offline) while the camera keeps streaming. `stream.py` serves the detection results at `http://172.20.10.4:8090/occupancy` (`people`, `confidence`, `empty_for_s`, `boxes`, and `ms`), which the Jetson polls every 2 s and publishes to `car/cabin/occupancy` (also exposed to the Gemini agent's `cabin_status` tool). On the UNO Q's live camera page (`http://172.20.10.4:8090/`), each detected person gets a bounding box labeled with its score (e.g. `person 0.86`)—drawn in green when the model is sure (confidence 0.5 or more) and yellow when unsure—plus a corner badge such as `On-device AI (Arduino UNO Q): 2 people · 519 ms`.
+In `stream.py`, `occupancy_loop` posts the newest camera frame to `http://127.0.0.1:1340/api/image` about once per second (~0.5 s per frame, ~180 MB of RAM, completely offline) while the camera keeps streaming. `stream.py` serves the detection results at `http://172.20.10.4:8090/occupancy` (`people`, `confidence`, `empty_for_s`, `boxes`, and `ms`), which the Jetson polls every 2 s and publishes to `car/cabin/occupancy` (also exposed to the Gemini agent's `cabin_status` tool). On the UNO Q's live camera page (`http://172.20.10.4:8090/`), each detected person gets a bounding box labeled with its score (e.g. `person 0.86`)—drawn in green when the model is sure (confidence 0.5 or more) and yellow when unsure—plus a corner badge such as `On-device AI (Arduino UNO Q): 2 people · frames going to NVIDIA Nemotron · detection 519 ms on-device` (or `nothing sent to the cloud` in Arduino blue).
 
 This creates a **two-tier AI architecture** between edge AI on the Arduino UNO Q and cloud reasoning on Verda:
 - **Tier 1 — Always-on offline Edge AI (Arduino UNO Q)**: YOLOX-nano watches cabin occupancy locally all the time with nothing leaving the board.
@@ -54,6 +56,7 @@ This creates a **two-tier AI architecture** between edge AI on the Arduino UNO Q
 ```text
 Arduino UNO Q (172.20.10.4:8090)
  ├─ STM32U585 MCU: thermo.ino ──Qwiic──> Modulino Thermo (temp & humidity every 2 s)
+ │                  └──> built-in LED matrix (people count + cloud icon, set by matrix_show)
  │        │
  │   /var/run/arduino-router.sock (MessagePack-RPC via Arduino_RouterBridge)
  │        │
@@ -74,10 +77,11 @@ Atech Driver Board & Back-Seat Board     Verda (Nemotron 3.5 Super VL), Gemini A
 
 ## Demo: what the judges will see
 
-1. **Live person detection on the UNO Q**: open `http://172.20.10.4:8090/` to see the Arduino USB Camera's live stream with real-time bounding boxes around each person—green when confidence is 0.5 or more, yellow when lower—alongside the corner badges `On-device AI (Arduino UNO Q): 2 people · 519 ms` and `Modulino Thermo: 26.4 °C · 32 % humidity` and the slide-out hand-sign guide.
-2. **Cabin climate warning with Modulino Thermo**: we warm the Modulino Thermo with a fan (or lower `hot_car_c` in `jetson-hub/secrets.json` for a quick demo). Because the UNO Q has seen someone in the cabin within the last minute, the car speaks: *"It's getting hot in here: 36 degrees. Please turn on the air conditioning, especially with children, older passengers or pets on board."* At the same time, the safeDrive phone page (`http://172.20.10.2:8092/`) shows a calm red banner: *"Too hot inside, 36 °C. Turn on the AC."* and the driver's Atech screen shows the temperature in red.
-3. **Hand signs and threat watch**: hold a thumbs-up or a T-shape ("need a break") toward the UNO Q camera and the car reads the message out to the driver. If someone grabs the wheel or shows a weapon, Nemotron triggers a silent threat alert.
-4. **SOS, crash countdown, and AI incident report**: hold the SOS button for 2 s or jolt the driver's board (> 2.5 g) to see the 10 s countdown on the screen. Within seconds, linked Telegram chats receive the live location, a cabin photo from the UNO Q, a 15 s H.264 video clip, and the Gemini incident report with the street address, nearest emergency department, cabin temperature, and `112` script.
+1. **The UNO Q's LED matrix**: the board itself shows how many people its AI sees, and a cloud icon while frames go to Nemotron. Walk out of the camera's view: the digit drops to 0, and after 10 s the cloud only flashes every 15 s.
+2. **Live person detection on the UNO Q**: open `http://172.20.10.4:8090/` to see the Arduino USB Camera's live stream with real-time bounding boxes around each person—green when confidence is 0.5 or more, yellow when lower—alongside the corner badges `On-device AI (Arduino UNO Q): 2 people · frames going to NVIDIA Nemotron · detection 519 ms on-device` (or `nothing sent to the cloud` in Arduino blue) and `Modulino Thermo: 26.4 °C · 32 % humidity` and the slide-out hand-sign guide.
+3. **Cabin climate warning with Modulino Thermo**: we warm the Modulino Thermo with a fan (or lower `hot_car_c` in `jetson-hub/secrets.json` for a quick demo). Because the UNO Q has seen someone in the cabin within the last minute, the car speaks: *"It's getting hot in here: 36 degrees. Please turn on the air conditioning, especially with children, older passengers or pets on board."* At the same time, the safeDrive phone page (`http://172.20.10.2:8092/`) shows a calm red banner: *"Too hot inside, 36 °C. Turn on the AC."* and the driver's Atech screen shows the temperature in red.
+4. **Hand signs and threat watch**: hold a thumbs-up or a T-shape ("need a break") toward the UNO Q camera and the car reads the message out to the driver. If someone grabs the wheel or shows a weapon, Nemotron triggers a silent threat alert.
+5. **SOS, crash countdown, and AI incident report**: hold the SOS button for 2 s or jolt the driver's board (> 2.5 g) to see the 10 s countdown on the screen. Within seconds, linked Telegram chats receive the live location, a cabin photo from the UNO Q, a 15 s H.264 video clip, and the Gemini incident report with the street address, nearest emergency department, cabin temperature, and `112` script.
 
 ## Results and what we measured
 
@@ -101,7 +105,7 @@ All numbers below were measured on the hardware during Junction 2026 (14 Novembe
 
 ## Components and supplies
 
-- **Arduino UNO Q** (2 GB RAM, 16 GB eMMC, dual-processor STM32U585 + Linux)
+- **Arduino UNO Q** (2 GB RAM, 16 GB eMMC, dual-processor STM32U585 + Linux, built-in 8 × 13 LED matrix)
 - **Arduino USB Camera**
 - **Arduino Modulino Thermo** (connected over Qwiic)
 - **USB-C hub (8-in-1)** (connected to the UNO Q's USB-C port)
@@ -113,7 +117,7 @@ All numbers below were measured on the hardware during Junction 2026 (14 Novembe
 
 ## Apps and platforms
 
-- **Arduino App Lab** (`ei-models-runner` container) and **arduino-cli** (with `Arduino_Modulino` and `Arduino_RouterBridge` libraries)
+- **Arduino App Lab** (`ei-models-runner` container) and **arduino-cli** (with the `Arduino_Modulino`, `Arduino_RouterBridge` and `Arduino_LED_Matrix` libraries)
 - **Edge Impulse** (YOLOX-nano object detection model running on the Arduino UNO Q)
 - **NVIDIA Nemotron 3.5 Super VL** (`nemotron-3.5-super-vl` on the Verda Inference API)
 - **Google Gemma 4 E2B** (`gemma4:e2b` via Ollama, running offline on the Jetson)

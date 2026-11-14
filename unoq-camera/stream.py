@@ -2,7 +2,7 @@
 # re-encoding (v4l2-ctl reads the camera, this splits the stream into JPEGs). Standard library only.
 #   GET /stream.mjpg  live multipart MJPEG (for a browser or the Jetson)
 #   GET /frame.jpg    newest frame, 503 if none in the last 2 s
-#   GET /health       JSON: fps, age of the newest frame, camera, size
+#   GET /health       JSON: fps, age of the newest frame, camera, size, dark (frames near-black)
 # Every frame carries X-Captured-At-Unix-Ns, as Wendy's camera sharing expects.
 import glob, json, os, subprocess, threading, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -25,9 +25,22 @@ def find_camera():
         if "MJPG" in fmts: return dev, name
     return None, None
 
+# The camera's auto exposure can get stuck near zero: auto mode stays on, but every frame is black.
+# Black frames are tiny JPEGs (~19 KB at 1280x720, a real picture is 90-130 KB), so when frames stay
+# that small for DARK_KICK_AFTER s, nudge auto exposure: manual at a long exposure, then back to auto.
+# A covered lens or a dark car gives small frames too; there the nudge is harmless and just repeats
+# every DARK_KICK_EVERY s.
+DARK_BYTES_PER_PIXEL = 0.035
+DARK_KICK_AFTER, DARK_KICK_EVERY = 10, 60
+
+def kick_exposure(dev):
+    for ctrl in ("auto_exposure=1", "exposure_time_absolute=10000", "auto_exposure=0"):   # one at a time:
+        subprocess.run(["v4l2-ctl", "-d", dev, "-c", ctrl], capture_output=True)            # order matters
+        time.sleep(0.5)
+
 latest = {"jpg": None, "ns": 0, "seq": 0}
 cond = threading.Condition()
-stats = {"device": None, "name": None, "fps": 0.0}
+stats = {"device": None, "name": None, "fps": 0.0, "dark": False}
 
 def capture_loop():
     while True:
@@ -42,6 +55,8 @@ def capture_loop():
         log(f"streaming {name} ({dev}) {WIDTH}x{HEIGHT} MJPEG @ {FPS} fps on port {PORT}")
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
         buf, count, t0 = b"", 0, time.time()
+        dark_limit = DARK_BYTES_PER_PIXEL * WIDTH * HEIGHT
+        dark_since, last_kick = None, 0.0
         try:
             while True:
                 chunk = p.stdout.read(65536)
@@ -57,6 +72,17 @@ def capture_loop():
                         latest.update(jpg=jpg, ns=time.time_ns(), seq=latest["seq"] + 1)
                         cond.notify_all()
                     count += 1
+                    now = time.time()
+                    stats["dark"] = len(jpg) < dark_limit
+                    if len(jpg) >= dark_limit:
+                        if dark_since and last_kick > dark_since: log("picture back after exposure nudge")
+                        dark_since = None
+                    elif dark_since is None:
+                        dark_since = now
+                    elif now - dark_since > DARK_KICK_AFTER and now - last_kick > DARK_KICK_EVERY:
+                        last_kick = now
+                        log(f"frames black for {now - dark_since:.0f}s ({len(jpg) // 1024} KB): nudging auto exposure")
+                        threading.Thread(target=kick_exposure, args=(dev,), daemon=True).start()
                     if time.time() - t0 >= 5:
                         stats["fps"] = round(count / (time.time() - t0), 1); count, t0 = 0, time.time()
         finally:

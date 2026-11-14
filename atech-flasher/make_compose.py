@@ -1,8 +1,9 @@
-# Generates compose.yml with project.yaml and runner.py embedded as base64
+# Generates compose.yml with project.yaml (zlib-compressed: Wendy caps each env var at 32 KB)
+# and runner.py embedded as base64
 # (Wendy skips bind mounts and rejects newlines in env vars).
 # Wi-Fi credentials come from secrets.json (see secrets.example.json) and are filled
 # into project.yaml's @WIFI_SSID@ / @WIFI_PASS@ placeholders here, so they never live in git.
-import base64, json, pathlib, sys
+import base64, json, pathlib, sys, zlib
 here = pathlib.Path(__file__).parent
 
 secrets_file = here / "secrets.json"
@@ -31,7 +32,7 @@ compose = f"""services:
       - atech-cache:/cache
     environment:
       RUNNER_B64: "{b64((here / 'runner.py').read_bytes())}"
-      PROJECT_B64: "{b64(project.encode())}"
+      PROJECT_B64: "{b64(zlib.compress(project.encode(), 9))}"
 volumes:
   atech-cache:
 """

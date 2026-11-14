@@ -38,7 +38,8 @@ print(f"tools ready after {time.time() - t0:.0f}s", flush=True)
 
 proj = pathlib.Path("/work/atech_car")
 proj.mkdir(parents=True, exist_ok=True)
-import base64; (proj / "project.yaml").write_bytes(base64.b64decode(os.environ["PROJECT_B64"]))
+import base64, zlib   # compressed by make_compose.py: Wendy caps each env var at 32 KB
+(proj / "project.yaml").write_bytes(zlib.decompress(base64.b64decode(os.environ["PROJECT_B64"])))
 
 # PlatformIO's build output (compiled objects + downloaded libraries). Restoring it lets the
 # build recompile only what changed instead of the whole Arduino framework every deploy.

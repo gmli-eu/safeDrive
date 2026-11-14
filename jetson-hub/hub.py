@@ -1,6 +1,8 @@
-# SafeDrive hub (runs on the Jetson). Scenario: hold the Atech port-6 button for 5 s
-# -> Telegram message + live location that follows the phone (OwnTracks) for LIVE_PERIOD s.
-import json, os, pathlib, socket, threading, time, urllib.parse, urllib.request
+# SafeDrive hub (runs on the Jetson). Scenarios:
+# - hold the Atech port-6 button for 2 s -> Telegram message + live location that follows
+#   the phone (OwnTracks) for LIVE_PERIOD s.
+# - "I'm ok" in the screen menu -> "I'm ok and I've arrived." + location to mom, dad or both.
+import json, math, os, pathlib, socket, threading, time, urllib.parse, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 import paho.mqtt.client as mqtt
 
@@ -16,27 +18,68 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 BOTS = json.loads(os.environ.get("TELEGRAM_BOTS") or "[]")
 LIVE_PERIOD = int(os.environ.get("LIVE_PERIOD", "900"))      # seconds the live location stays live
 MAX_FIX_AGE = int(os.environ.get("MAX_FIX_AGE", "1800"))     # ignore phone fixes older than this
+FRESH_FIX_AGE = int(os.environ.get("FRESH_FIX_AGE", "60"))   # older than this: ask the phone for a new one
+FIX_WAIT = float(os.environ.get("FIX_WAIT", "30"))           # check-in: how long a late answer from the phone still counts
+MOVED_M = float(os.environ.get("MOVED_M", "100"))            # check-in: send the late answer only if it's this far off
+SOS_FIX_WAIT = float(os.environ.get("SOS_FIX_WAIT", "60"))   # SOS with no location at all: keep waiting this long
 STATE_FILE = pathlib.Path(os.environ.get("STATE_DIR", "/data")) / "telegram.json"
 
 lock = threading.Lock()
 fix = None            # latest OwnTracks fix: dict(lat, lon, acc, tst)
 live = None           # active live location: dict(msgs=[(token, chat, message_id)], until, last_edit)
 state = {}
+fix_arrived = threading.Event()   # set on every new phone fix (see wait_for_fix)
 
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 def load_state():
-    global state
+    global state, fix
     try: state = json.loads(STATE_FILE.read_text())
     except Exception: state = {}
     state.setdefault("chats", {})          # bot name -> [chat ids]
+    # Last phone fix, saved so a hub restart doesn't lose it (OwnTracks in Move mode
+    # only reports again once the phone moves). recent_fix() still drops it once stale.
+    fix = state.get("fix")
 
 def save_state():
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state))
 
-def recipients():
-    return [(b["token"], c) for b in BOTS for c in state["chats"].get(b["name"], [])]
+def recipients(names=None):
+    # Every linked chat, or only the chats of the bots in names (e.g. {"mom"}).
+    return [(b["token"], c) for b in BOTS if names is None or b["name"] in names
+            for c in state["chats"].get(b["name"], [])]
+
+def recent_fix():
+    with lock: f = dict(fix) if fix else None
+    return f if f and time.time() - f["tst"] <= MAX_FIX_AGE else None
+
+def fix_age(f): return time.time() - f["tst"]
+
+def ask_phone():
+    # Ask OwnTracks for a new fix (remote command reportLocation, enabled in the app).
+    # False if the phone's topic isn't known yet (it's learned from its first location).
+    with lock: topic = state.get("phone_topic")
+    if not topic:
+        log("can't ask the phone for a location: its OwnTracks topic isn't known yet")
+        return False
+    fix_arrived.clear()
+    publish(topic + "/cmd", {"_type": "cmd", "action": "reportLocation"})
+    log(f"asked the phone for a location on {topic}/cmd")
+    return True
+
+def wait_for_fix(timeout):
+    if fix_arrived.wait(timeout):
+        log("phone sent a new location")
+        return recent_fix()
+    log(f"no new location from the phone within {timeout:.0f}s")
+    return None
+
+def distance_m(a, b):
+    # Haversine distance between two fixes, in metres.
+    la1, la2 = math.radians(a["lat"]), math.radians(b["lat"])
+    h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin(math.radians(b["lon"] - a["lon"]) / 2) ** 2
+    return 2 * 6371000 * math.asin(math.sqrt(h))
 
 def tg(token, method, **params):
     data = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}).encode()
@@ -54,41 +97,57 @@ def set_mode(mode): publish("car/hub/state", {"mode": mode}, retain=True)
 
 # ---------- scenario 2: SOS long press ----------
 def send_sos():
+    # Goes out at once with the last fix; the phone is asked for a new one at the same time.
+    # When it answers, the live location moves to it (update_live). With no fix at all, the
+    # live location follows as soon as the phone answers (up to SOS_FIX_WAIT s).
     global live
     try:
         targets = recipients()
         if not targets: raise RuntimeError("no Telegram chats linked yet: send any message to the bots")
-        with lock: f = dict(fix) if fix else None
-        has_fix = bool(f) and time.time() - f["tst"] <= MAX_FIX_AGE
-        if has_fix:
+        f = recent_fix()
+        asked = (not f or fix_age(f) > FRESH_FIX_AGE) and ask_phone()
+        head = "🚨 SafeDrive alert: the driver held the emergency button.\n"
+        if f:
             maps = f"https://maps.google.com/?q={f['lat']:.6f},{f['lon']:.6f}"
-            text = (f"🚨 SafeDrive alert: the driver held the emergency button.\n"
-                    f"Live location below (updates for {LIVE_PERIOD // 60} min).\n{maps}")
+            when = f"Last known position, {fix_age(f) / 60:.0f} min ago. " if fix_age(f) > FRESH_FIX_AGE else ""
+            text = head + f"{when}Live location below (updates for {LIVE_PERIOD // 60} min).\n{maps}"
+        elif asked:
+            text = head + "📍 Getting the location from the phone..."
         else:
-            text = ("🚨 SafeDrive alert: the driver held the emergency button.\n"
-                    "⚠️ No recent GPS fix from the phone (is OwnTracks running?).")
+            text = head + "⚠️ No recent GPS fix from the phone (is OwnTracks running?)."
         msgs, errors = [], []
         t0 = time.time()
+        def send_live(token, chat, f):
+            m = tg(token, "sendLocation", chat_id=chat, latitude=f["lat"], longitude=f["lon"],
+                   live_period=LIVE_PERIOD, horizontal_accuracy=min(f.get("acc") or 0, 1500) or None)
+            with lock: msgs.append((token, chat, m["message_id"]))
+            log(f"SOS location to {chat} after {time.time() - t0:.1f}s")
         def send_one(target):
             token, chat = target
             try:
                 tg(token, "sendMessage", chat_id=chat, text=text)
                 log(f"SOS text to {chat} after {time.time() - t0:.1f}s")
-                if has_fix:
-                    m = tg(token, "sendLocation", chat_id=chat, latitude=f["lat"], longitude=f["lon"],
-                           live_period=LIVE_PERIOD, horizontal_accuracy=min(f.get("acc") or 0, 1500) or None)
-                    with lock: msgs.append((token, chat, m["message_id"]))
-                    log(f"SOS location to {chat} after {time.time() - t0:.1f}s")
+                if f: send_live(token, chat, f)
             except Exception as e:
                 with lock: errors.append(str(e))
         # Every recipient at once, so the last chat doesn't wait for all the others.
         with ThreadPoolExecutor(max_workers=len(targets)) as pool:
             list(pool.map(send_one, targets))
         log(f"SOS sent to {len(targets) - len(errors)}/{len(targets)} chats in {time.time() - t0:.1f}s", errors or "")
-        if msgs:
-            with lock: live = {"msgs": msgs, "until": time.time() + LIVE_PERIOD, "last_edit": 0}
         if len(errors) == len(targets): raise RuntimeError("; ".join(errors))
-        if not has_fix: raise RuntimeError("alert sent without location (no recent phone fix)")
+        if not f and asked and (f := wait_for_fix(SOS_FIX_WAIT)):
+            def follow_up(target):
+                token, chat = target
+                try: send_live(token, chat, f)
+                except Exception as e: log("SOS location follow-up failed:", e)
+            with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+                list(pool.map(follow_up, targets))
+        if msgs:
+            with lock:
+                live = {"msgs": msgs, "until": time.time() + LIVE_PERIOD, "last_edit": 0}
+                moved = fix and fix["tst"] != f["tst"]
+            if moved: threading.Thread(target=update_live, daemon=True).start()   # a fix that came in meanwhile
+        if not msgs: raise RuntimeError("alert sent without location (no recent phone fix)")
         publish("car/atech/notify", {"status": "sent"})
         set_mode("idle")
     except Exception as e:
@@ -96,12 +155,68 @@ def send_sos():
         publish("car/atech/notify", {"status": "error", "reason": str(e)})
         set_mode("error")
 
+# ---------- scenario 3: "I'm ok" check-in from the screen menu ----------
+CHECKIN_TO = {"mom": {"mom"}, "dad": {"dad"}, "both": {"mom", "dad"}}
+
+def send_checkin(to):
+    # Goes out at once with the last fix (up to MAX_FIX_AGE old). If that's over FRESH_FIX_AGE
+    # old, the phone is asked for a new one in the background; a late answer (FIX_WAIT s)
+    # is sent as a second pin only if it's over MOVED_M away, or if there was no fix at all.
+    def result(**payload): publish("car/atech/checkin/result", payload)
+    try:
+        names = CHECKIN_TO.get(to)
+        if not names: raise RuntimeError(f"unknown recipient {to!r}")
+        targets = recipients(names)
+        if not targets: raise RuntimeError(f"No chat linked for {to}: open the bot and tap Start")
+        f = recent_fix()
+        asked = (not f or fix_age(f) > FRESH_FIX_AGE) and ask_phone()
+        text = "I'm ok and I've arrived."
+        if f: text += f"\nhttps://maps.google.com/?q={f['lat']:.6f},{f['lon']:.6f}"
+        elif asked: text += "\n📍 Getting the location from the phone..."
+        else: text += "\n⚠️ No recent GPS fix from the phone, so no location."
+        errors = []
+        def send_pin(token, chat, f):
+            tg(token, "sendLocation", chat_id=chat, latitude=f["lat"], longitude=f["lon"],
+               horizontal_accuracy=min(f.get("acc") or 0, 1500) or None)
+        def send_one(target):
+            token, chat = target
+            try:
+                tg(token, "sendMessage", chat_id=chat, text=text)
+                if f: send_pin(token, chat, f)
+            except Exception as e:
+                with lock: errors.append(str(e))
+        with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+            list(pool.map(send_one, targets))
+        log(f"check-in ({to}) sent to {len(targets) - len(errors)}/{len(targets)} chats", errors or "")
+        if len(errors) == len(targets): raise RuntimeError("Telegram send failed")
+        if not f: result(status="sent", warning="no location")
+        else: result(status="sent")
+        if asked:
+            new = wait_for_fix(FIX_WAIT)
+            if new and (not f or distance_m(f, new) > MOVED_M):
+                log("check-in: sending the phone's new location")
+                for token, chat in targets:
+                    try:
+                        if f: tg(token, "sendMessage", chat_id=chat, text="📍 Updated location:")
+                        send_pin(token, chat, new)
+                    except Exception as e: log("check-in location follow-up failed:", e)
+    except Exception as e:
+        log("check-in failed:", e)
+        result(status="error", reason=str(e)[:80].replace('"', "'"))
+
 def update_live():
     global live
     with lock:
         if not live or not fix: return
         if time.time() > live["until"]: live = None; return
-        if time.time() - live["last_edit"] < 5: return     # Telegram rate limit
+        wait = live["last_edit"] + 5 - time.time()          # Telegram rate limit: one edit per 5 s
+        if wait > 0:
+            # Too soon: retry once the limit allows it, so the latest fix isn't dropped.
+            if not live.get("retry"):
+                live["retry"] = True
+                t = threading.Timer(wait, update_live); t.daemon = True; t.start()
+            return
+        live["retry"] = False
         live["last_edit"] = time.time()
         msgs, f = list(live["msgs"]), dict(fix)
     for token, chat, mid in msgs:
@@ -123,7 +238,13 @@ def on_message(c, userdata, m):
     except Exception: data = m.payload.decode(errors="replace")
     if m.topic.startswith("owntracks/"):
         if isinstance(data, dict) and data.get("_type") == "location":
-            with lock: fix = {"lat": data["lat"], "lon": data["lon"], "acc": data.get("acc"), "tst": data.get("tst", time.time())}
+            with lock:
+                fix = {"lat": data["lat"], "lon": data["lon"], "acc": data.get("acc"), "tst": data.get("tst", time.time())}
+                state["fix"] = fix
+                # owntracks/<user>/<device>: where ask_phone() sends the phone commands
+                if m.topic.count("/") == 2: state["phone_topic"] = m.topic
+                save_state()
+            fix_arrived.set()
             log("phone location", data["lat"], data["lon"], "acc", data.get("acc"))
             threading.Thread(target=update_live, daemon=True).start()
         return
@@ -132,6 +253,8 @@ def on_message(c, userdata, m):
     if m.topic == "car/atech/button" and isinstance(data, dict) and data.get("action") == "long_press" and data.get("id") == "sos":
         set_mode("alerting")
         threading.Thread(target=send_sos, daemon=True).start()
+    elif m.topic == "car/atech/checkin" and isinstance(data, dict):
+        threading.Thread(target=send_checkin, args=(data.get("to"),), daemon=True).start()
 
 # ---------- Telegram: link chats, answer /where ----------
 def telegram_loop(bot):

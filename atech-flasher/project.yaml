@@ -3,9 +3,11 @@ board: 14port
 libraries:
   - knolleary/PubSubClient@^2.8
 modules:
-  - {id: button,   instance: lightbtn, port: 3}   # tap: toggle the light grid
-  - {id: button,   instance: sosbtn,   port: 6}   # hold 2 s: Telegram live location
-  - {id: neopixel, instance: grid,     port: 7}
+  - {id: st7735_tft,     instance: screen,   ports: [1, 2]}     # check-in menu
+  - {id: button,         instance: lightbtn, port: 3}           # tap: toggle the light grid
+  - {id: button,         instance: sosbtn,   port: 6}           # hold 2 s: Telegram live location
+  - {id: neopixel,       instance: grid,     port: 7}
+  - {id: rotary_encoder, instance: knob,     ports: [13, 14]}   # turn: move in the menu, press: select
 code:
   globals: |
     #include <WiFi.h>
@@ -39,6 +41,89 @@ code:
       if (mqtt.connected()) mqtt.publish(topic, json);
     }
 
+    // ---------- Check-in menu: screen on ports 1-2, knob on ports 13-14 ----------
+    // Main menu: "I'm ok". Press it -> choose who to tell. Pressing a recipient sends
+    // car/atech/checkin {"to":"mom"|"dad"|"both"}; the hub answers on car/atech/checkin/result.
+    enum CheckinMenu { MENU_MAIN, MENU_SEND, MENU_STATUS };
+    const char* const MAIN_ITEMS[] = {"I'm ok"};
+    const char* const SEND_ITEMS[] = {"Send to mom", "Send to dad", "Send to both", "Go back"};
+    const char* const SEND_TO[]    = {"mom", "dad", "both"};
+    static const int SEND_BACK = 3;
+    static const unsigned long CHECKIN_TIMEOUT_MS = 40000;   // hub's Telegram calls time out at 35 s
+
+    CheckinMenu menu = MENU_MAIN;
+    int menuSel = 0;
+    bool menuDirty = true;
+    String statusTitle, statusBody;
+    uint16_t statusColor = ATECH_FG;
+    unsigned long statusUntil = 0;     // when the status screen closes; 0 = waiting for the hub
+    unsigned long checkinSentAt = 0;   // 0 = no check-in waiting for a result
+
+    int menuCount() { return menu == MENU_MAIN ? 1 : 4; }
+    const char* menuItem(int i) { return menu == MENU_MAIN ? MAIN_ITEMS[i] : SEND_ITEMS[i]; }
+
+    void openMenu(CheckinMenu m) { menu = m; menuSel = 0; menuDirty = true; }
+
+    void showStatus(const char* title, const String& body, uint16_t color, unsigned long ms) {
+      menu = MENU_STATUS;
+      statusTitle = title; statusBody = body; statusColor = color;
+      statusUntil = ms ? millis() + ms : 0;
+      menuDirty = true;
+    }
+
+    void drawMenu() {
+      menuDirty = false;
+      int16_t w = screen.width();
+      screen.clear();
+      if (menu == MENU_STATUS) {
+        screen.displayText(statusTitle, 6, 8, 2, statusColor);
+        screen.setTextSize(1);
+        screen.setTextColor(ATECH_MUTED);
+        screen.setCursor(6, 36);
+        screen.print(statusBody);
+      } else {
+        screen.displayText(menu == MENU_MAIN ? "SafeDrive" : "I'm ok: tell who?", 6, 3, 1, ATECH_MUTED);
+        screen.drawLine(0, 13, w - 1, 13, ATECH_HAIRLINE);
+        int n = menuCount();
+        uint8_t size = n <= 2 ? 2 : 1;
+        int rowH = size == 2 ? 26 : 16;
+        for (int i = 0; i < n; i++) {
+          int y = 16 + i * rowH;
+          if (i == menuSel) screen.fillRoundRect(2, y, w - 4, rowH - 2, 4, ATECH_ACCENT);
+          screen.displayText(menuItem(i), 8, y + (rowH - 2 - 8 * size) / 2, size, ATECH_FG);
+        }
+      }
+      screen.display();
+    }
+
+    void sendCheckin(int i) {
+      if (!mqtt.connected()) {
+        showStatus("Offline", "Not connected to the hub. Try again in a moment.", ATECH_ALERT, 4000);
+        return;
+      }
+      char json[48];
+      snprintf(json, sizeof json, "{\"to\":\"%s\"}", SEND_TO[i]);
+      mqtt.publish("car/atech/checkin", json);
+      checkinSentAt = millis();
+      showStatus("Sending...", String("I'm ok, to ") + SEND_TO[i], ATECH_FG, 0);
+      logLine(json);
+    }
+
+    // Hub reply: {"status":"sent"} / {"status":"sent","warning":"no location"} / {"status":"error","reason":"..."}
+    void onCheckinResult(const String& p) {
+      if (!checkinSentAt) return;      // late reply after the timeout: ignore
+      checkinSentAt = 0;
+      if (p.indexOf("\"sent\"") >= 0) {
+        if (p.indexOf("warning") >= 0) showStatus("Sent", "Sent without location: no recent GPS fix.", ATECH_WARN, 4000);
+        else showStatus("Sent", "Message and location delivered.", ATECH_OK, 2500);
+      } else {
+        String reason = "Unknown error";
+        int a = p.indexOf("\"reason\":\"");
+        if (a >= 0) { a += 10; int b = p.indexOf('"', a); if (b > a) reason = p.substring(a, b); }
+        showStatus("Failed", reason, ATECH_ALERT, 5000);
+      }
+    }
+
     void setLight(bool on) {
       lightOn = on;
       if (on) grid.setAll(255, 255, 255); else grid.clear();
@@ -48,6 +133,7 @@ code:
 
     // Commands from the hub: car/atech/light  {"on":true|false} or "toggle"
     //                        car/atech/notify {"status":"sent"|"error"}
+    //                        car/atech/checkin/result (see onCheckinResult)
     void onMqtt(char* topic, byte* payload, unsigned int len) {
       String t(topic), p;
       for (unsigned int i = 0; i < len; i++) p += (char)payload[i];
@@ -62,6 +148,8 @@ code:
           sosColorUntil = millis() + 3000;
           sosFlashAt = 0;
         }
+      } else if (t == "car/atech/checkin/result") {
+        onCheckinResult(p);
       }
     }
 
@@ -86,6 +174,7 @@ code:
           mqtt.publish("car/atech/status", "{\"online\":true}", true);
           mqtt.subscribe("car/atech/light");
           mqtt.subscribe("car/atech/notify");
+          mqtt.subscribe("car/atech/checkin/result");
           logLine("mqtt: connected");
         } else {
           logLine("mqtt: connect failed");
@@ -109,6 +198,8 @@ code:
     mqtt.setCallback(onMqtt);
     mqtt.setSocketTimeout(2);
     grid.clear(); grid.show();
+    knob.setAcceleration(false);       // one detent = one menu row
+    knob.setRingColor(10, 132, 255);
   loop: |
     keepConnected();
 
@@ -151,3 +242,25 @@ code:
       if (phase == 3) { sosFlashAt = 0; lastPhase = -1; }
     }
 
+    // Scenario 3: check-in menu. Turn the knob to move, press it to select.
+    static long knobLast = knob.getPosition();
+    long knobPos = knob.getPosition();
+    long steps = knobLast - knobPos;   // the knob counts down when turned right; right = move down
+    knobLast = knobPos;
+    if (steps && menu != MENU_STATUS) {
+      menuSel = constrain(menuSel + (int)steps, 0, menuCount() - 1);
+      menuDirty = true;
+    }
+    if (knob.wasPressed()) {
+      if (menu == MENU_MAIN) openMenu(MENU_SEND);
+      else if (menu == MENU_SEND) { if (menuSel == SEND_BACK) openMenu(MENU_MAIN); else sendCheckin(menuSel); }
+      else if (statusUntil) openMenu(MENU_MAIN);   // a press closes a result early
+    }
+    if (menu == MENU_STATUS) {
+      if (statusUntil && millis() > statusUntil) openMenu(MENU_MAIN);
+      if (checkinSentAt && millis() - checkinSentAt > CHECKIN_TIMEOUT_MS) {
+        checkinSentAt = 0;
+        showStatus("No reply", "The hub didn't answer. Is it running?", ATECH_ALERT, 5000);
+      }
+    }
+    if (menuDirty) drawMenu();

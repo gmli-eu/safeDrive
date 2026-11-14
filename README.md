@@ -20,7 +20,7 @@ iPhone (OwnTracks) ---MQTT location--------+
     - `jetson-hub/secrets.json`: copy `secrets.example.json` and add the bot tokens from BotFather.
     - `atech-flasher/secrets.json`: copy `secrets.example.json` and add the Wi-Fi name and password.
 2. **Wi-Fi**: the board only sees 2.4 GHz. On an iPhone hotspot, turn on _Maximize Compatibility_. The firmware expects the Jetson at `172.20.10.2` (`MQTT_HOST` in `atech-flasher/project.yaml`).
-3. **Phone location**: install OwnTracks and set Mode MQTT, Host `172.20.10.2`, Port `1883`, TLS off, Authentication off, location access _Always_, monitoring _Move_.
+3. **Phone location**: install OwnTracks and set Mode MQTT, Host `172.20.10.2`, Port `1883`, TLS off, Authentication off, location access _Always_, monitoring _Move_. Turn on remote commands (`cmd`) too: when the hub's last location is over 1 minute old, it asks the phone for a new one.
 4. **Telegram**: each parent opens their bot and taps **Start**. The bot replies "✅ SafeDrive connected".
 
 ## Deploy
@@ -34,8 +34,15 @@ python3 tools/deploy.py atech-flasher   # ~1 min: build, flash, wait for the boa
 
 ## SOS button (port 6)
 
-- Hold 2 s: two amber flashes, and the alert goes out to every linked chat.
+- Hold 2 s: two amber flashes, and the alert goes out to every linked chat at once, with a live location. If the last location is over 1 minute old, the hub asks the phone for a new one and the live location moves there when it arrives. With no location at all, the live location follows as soon as the phone answers (up to 60 s).
 - Red for 3 s: the hub reported a problem (no chats linked, every send failed, or no recent GPS fix, in which case the alert went out without a location).
 - The white light while it's pressed is built into the V2.0 button, and firmware can't turn it off.
 
 The port 3 button toggles the light grid.
+
+## Check-in menu (screen on ports 1-2, knob on ports 13-14)
+
+- Turn the knob to move through the menu and press it to select.
+- **I'm ok** opens: Send to mom, Send to dad, Send to both, Go back.
+- Picking a recipient sends "I'm ok and I've arrived." plus the phone's location right away, using the last location from up to 30 minutes ago. If it's over 1 minute old, the hub also asks the phone for a new one and sends a second pin if the phone answers from more than 100 m away to that bot (`mom` and `dad` in `jetson-hub/secrets.json`). The screen then shows **Sent** (green), **Sent** without location (orange, no recent GPS fix) or **Failed** with the reason (red), and goes back to the menu. You can press the knob to close it sooner.
+- **Go back** returns to the main menu.

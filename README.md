@@ -35,6 +35,8 @@ python3 tools/deploy.py atech-flasher   # ~1 min: build, flash, wait for the boa
 python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over SSH, restart, wait for frames
 ```
 
+`deploy.py jetson-hub` first checks the hub log and refuses to deploy while an SOS, accident or threat alert from the last 2 minutes hasn't finished sending its clip, because a restart would drop the photo and clip. `--check` runs only that check; `--force` deploys anyway.
+
 `deploy.py` runs the app's `make_compose.py`, which generates `compose.yml` with the code and secrets embedded. Then it runs `wendy run --detach` and follows the logs until the app is up. The device defaults to `wendyos-hackathon-device-4.local`; set `WENDY_DEVICE` to override it. Each run's `compose.yml` is generated and holds secrets, so it isn't committed.
 
 ## SOS button (port 6)

@@ -1,6 +1,10 @@
 # Deploy an app to the Jetson and follow its logs until it is up, then stop.
 #   python3 tools/deploy.py atech-flasher     (waits for the board's "mqtt: connected")
 #   python3 tools/deploy.py jetson-hub        (waits for the hub's "MQTT connected")
+#   python3 tools/deploy.py unoq-camera       (copies the camera streamer to the Uno Q over SSH)
+# jetson-hub refuses to deploy while an SOS/accident/threat alert is still being sent: a restart
+# kills the photo/clip upload. --check only runs that check; --force deploys anyway.
+import re
 import json, os, pathlib, shutil, subprocess, sys, threading, time
 from datetime import datetime, timezone
 
@@ -12,7 +16,8 @@ APPS = {  # folder -> (wendy app name, line that means "up", log lines worth sho
 }
 FAIL = (" failed", "rror:", "Traceback", "No Atech board")
 
-folder = sys.argv[1].strip("/").split("/")[-1]
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+folder = args[0].strip("/").split("/")[-1]
 if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, runs as a systemd service
     root = pathlib.Path(__file__).resolve().parent.parent / folder
     secrets = json.loads((root / "secrets.json").read_text())
@@ -44,7 +49,35 @@ if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, r
 app, ready, show = APPS[folder]
 wendy = shutil.which("wendy") or str(pathlib.Path.home() / ".local/bin/wendy")
 root = pathlib.Path(__file__).resolve().parent.parent / folder
-timeout = float(sys.argv[2]) if len(sys.argv) > 2 else 600
+timeout = float(args[1]) if len(args) > 1 else 600
+def alert_in_flight():
+    # The newest SOS/accident/threat alert in the hub log from the last ALERT_WINDOW s that hasn't
+    # logged its clip as sent or unavailable yet (send_media in hub.py), or None.
+    ALERT_WINDOW = 120
+    r = subprocess.run([wendy, "device", "logs", app, "--device", DEVICE, "--no-follow", "--tail", "400"],
+                       capture_output=True, text=True, timeout=60)
+    start = re.compile(r"MQTT car/atech/accident |MQTT car/atech/button .*'sos'|MQTT car/vision/threat .*'high'"
+                       r"|\b(SOS|accident|threat) (text|location) to")
+    done = re.compile(r"\b(SOS|accident|threat) (clip (sent|unavailable)|failed)|threat ignored")
+    busy = None
+    for line in r.stdout.splitlines():
+        try: rec = json.loads(line)
+        except Exception: continue
+        ts = rec.get("timestamp")
+        if not ts: continue
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(ts[:26].rstrip("Z") + "+00:00")).total_seconds()
+        if age > ALERT_WINDOW: continue
+        for l in rec.get("body", "").splitlines():
+            if done.search(l): busy = None
+            elif start.search(l) and not busy: busy = f"{l.strip()[:100]} ({age:.0f} s ago)"
+    return busy
+
+if app == "car-hub" and "--force" not in sys.argv:
+    busy = alert_in_flight()
+    if busy: sys.exit(f"not deploying: an alert is still being sent ({busy}). A restart now would drop its "
+                      "photo and clip. Wait for its clip, or pass --force.")
+if "--check" in sys.argv: print("no alert in flight"); sys.exit(0)
+
 t0 = time.time()
 stamp = lambda: f"[{time.time() - t0:5.0f}s]"
 

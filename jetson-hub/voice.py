@@ -276,6 +276,7 @@ def transcribe(pcm):
 
 # ---------- what does the driver want? ----------
 ACTIONS = ["send_message", "ask_google", "light", "answer", "unclear"]
+NAMES_GOOGLE = re.compile(r"\b(?:google|gemini)\b", re.I)   # the only way a request goes online
 SCHEMA = {"type": "object", "properties": {
     "action": {"type": "string", "enum": ACTIONS},
     "to": {"type": "array", "items": {"type": "string"}},
@@ -287,7 +288,7 @@ def system_prompt():
     return f"""You turn what a driver says to their car into one JSON action. Reply with JSON only.
 Actions:
 - send_message: send a text message. "to" lists who gets it, from: {who}, or ["all"] for both/everyone/the family. "text" is the message itself, as the driver wants it sent (first person, without "send a message to ..." and without "hey car").
-- ask_google: the driver asks to ask or search Google, or wants anything that needs the internet, today's information or places (weather, news, traffic, scores, opening times, nearest fuel or pharmacy, directions), including requests that combine that with a message ("find a pharmacy and text mom I'm stopping there"). "query" is the driver's whole request, as a complete sentence.
+- ask_google: the driver says "Google" (or "Gemini") and asks it something, e.g. "ask Google what's the weather", "Google, find the nearest pharmacy and text mom I'm stopping there". Also use it for questions that need the internet, today's information or places even without the word Google (the car will then tell the driver to say "ask Google"). "query" is the driver's whole request, as a complete sentence.
 - light: turn the car's light on or off. "on" is true or false.
 - answer: anything else you can answer yourself (simple facts, maths, jokes, small talk). "reply" is the spoken answer: one or two short sentences, no lists or symbols.
 - unclear: empty, cut off, or not understandable."""
@@ -329,7 +330,7 @@ def fallback(text):
     # that needs today's internet: the rest of the sentence is the question.
     m = re.search(r"\b(?:google|gemini)\b\W*(?:for\s+|about\s+)?(.+)", t, re.I)
     if m: return {"action": "ask_google", "query": m.group(1)}
-    if re.search(r"\b(?:weather|forecast|news|traffic|score)\b", t, re.I): return {"action": "ask_google", "query": t}
+    if re.search(r"\b(?:weather|forecast|news|traffic|score)\b", t, re.I): return {"action": "ask_google", "query": t}   # the car then asks for "ask Google"
     m = re.search(r"\blights?\b.*\b(on|off)\b|\b(on|off)\b.*\blights?\b", t, re.I)
     if m: return {"action": "light", "on": (m.group(1) or m.group(2)).lower() == "on"}
     return {"action": "unclear"}
@@ -353,7 +354,11 @@ def handle(s, pcm):
     if not current(s): return
     act = intent.get("action")
     if act == "send_message": send_message(s, intent)
-    elif act == "ask_google": ask_google(s, intent.get("query") or text)
+    elif act == "ask_google":
+        # Online only when the driver asks for Google by name: everything else stays in the car,
+        # whatever the local model decided.
+        if NAMES_GOOGLE.search(text): ask_google(s, text)
+        else: say(s, "I can't check that offline. Say 'ask Google' to look it up.", "Offline only", "Say 'ask Google ...' to look it up online.", "warn")
     elif act == "light":
         on = bool(intent.get("on"))
         client.publish("car/atech/light", json.dumps({"on": on}))

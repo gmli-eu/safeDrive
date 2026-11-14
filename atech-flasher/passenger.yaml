@@ -59,6 +59,10 @@ code:
     unsigned long listenAt = 0;
     unsigned long thinkingAt = 0;          // 0 = not waiting for an answer
     unsigned long offlineAt = 0;           // red flash: the hub can't be reached
+    // Translator (turned on from the driver's screen, retained on car/translator): the button flashes
+    // to invite the back seat to press it, until their first press.
+    bool translatorOn = false;
+    bool invite = false;
 
     void onMic(const int16_t* samples, int count, void*) {   // capture task, core 0: copy and return
       size_t n = count * 2;
@@ -78,6 +82,7 @@ code:
     }
 
     void voiceStart() {
+      invite = false;                        // they found the button
       if (!micBuf || !playBuf) { logLine("voice: off, no memory for the audio buffers"); return; }
       if (!mqtt.connected()) {
         offlineAt = millis();
@@ -114,8 +119,9 @@ code:
       char b[48]; snprintf(b, sizeof b, "voice: stopped listening (%s)", reason); logLine(b);
     }
 
-    // From the hub: car/passenger/voice/pcm (the spoken answer, raw 16 kHz PCM) and
-    // car/passenger/voice/stop (the hub's backstop when "end" got lost).
+    // From the hub: car/passenger/voice/pcm (the spoken answer, raw 16 kHz PCM),
+    // car/passenger/voice/stop (the hub's backstop when "end" got lost) and
+    // car/passenger/voice/done (translator: the driver has been told; no answer is coming yet).
     void onMqtt(char* topic, byte* payload, unsigned int len) {
       if (!strcmp(topic, "car/passenger/voice/pcm")) {
         thinkingAt = 0;
@@ -123,6 +129,12 @@ code:
           xStreamBufferSend(playBuf, payload, len, 0);
       } else if (!strcmp(topic, "car/passenger/voice/stop")) {
         voiceStop("hub");
+      } else if (!strcmp(topic, "car/translator")) {
+        String p; for (unsigned int i = 0; i < len; i++) p += (char)payload[i];
+        bool on = p.indexOf("true") >= 0;    // {"on":true}
+        if (on != translatorOn) { translatorOn = on; invite = on; logLine(on ? "translator: on" : "translator: off"); }
+      } else if (!strcmp(topic, "car/passenger/voice/done")) {
+        if (thinkingAt) { thinkingAt = 0; spk.playNote(NOTE_E5, 80); spk.playNote(NOTE_A5, 120); }
       }
     }
 
@@ -183,6 +195,8 @@ code:
               mqtt.publish("car/passenger/status", "{\"online\":true}", true);
               mqtt.subscribe("car/passenger/voice/pcm");
               mqtt.subscribe("car/passenger/voice/stop");
+              mqtt.subscribe("car/passenger/voice/done");
+              mqtt.subscribe("car/translator");
               logLine("mqtt: connected");
             } else {
               logLine("mqtt: connect failed");
@@ -243,15 +257,17 @@ code:
     if (thinkingAt && millis() - thinkingAt > THINK_MAX_MS) thinkingAt = 0;
     if (offlineAt && millis() - offlineAt > 1500) offlineAt = 0;
 
-    // The button's light: green = listening, blue = thinking, red flash = no hub, otherwise off.
-    // Re-sent every second, because one garbled command over long wires would stick.
+    // The button's light: green = listening, blue = thinking, red flash = no hub, flashing cyan =
+    // translator on, press me; otherwise off. Re-sent every second, because one garbled command
+    // over long wires would stick.
     static int shown = -1;
     static unsigned long lightAt = 0;
-    int want = listening ? 1 : offlineAt ? 3 : thinkingAt ? 2 : 0;
+    int want = listening ? 1 : offlineAt ? 3 : thinkingAt ? 2 : (invite && (millis() / 400) % 2) ? 4 : 0;
     if (want != shown || millis() - lightAt > 1000) {
       shown = want; lightAt = millis();
       if (want == 1) btn.setColor(0, 255, 0);
       else if (want == 2) btn.setColor(0, 60, 255);
       else if (want == 3) btn.setColor(255, 0, 0);
+      else if (want == 4) btn.setColor(0, 200, 255);
       else btn.off();
     }

@@ -3,7 +3,7 @@ board: 14port
 libraries:
   - knolleary/PubSubClient@^2.8
 modules:
-  - {id: st7735_tft,     instance: screen,   ports: [1, 2]}     # check-in menu
+  - {id: st7735_tft,     instance: screen,   ports: [1, 2]}     # menu: check-in, translator
   - {id: microphone,     instance: mic,      ports: [3, 4]}     # voice: streams to the hub while listening
   - {id: button,         instance: voicebtn, port: 5}           # press: talk to the car, green while listening
   - {id: button,         instance: sosbtn,   port: 6}           # hold 2 s: Telegram live location
@@ -48,8 +48,9 @@ code:
     // ---------- Check-in menu: screen on ports 1-2, knob on ports 13-14 ----------
     // Main menu: "I'm ok". Press it -> choose who to tell. Pressing a recipient sends
     // car/atech/checkin {"to":"mom"|"dad"|"both"}; the hub answers on car/atech/checkin/result.
-    enum CheckinMenu { MENU_MAIN, MENU_SEND, MENU_STATUS, MENU_ACCIDENT };
-    const char* const MAIN_ITEMS[] = {"I'm ok"};
+    enum CheckinMenu { MENU_MAIN, MENU_SEND, MENU_STATUS, MENU_ACCIDENT, MENU_TRANSLATOR };
+    const char* const MAIN_ITEMS[] = {"I'm ok", "Translator"};
+    static const int MAIN_TRANSLATOR = 1;
     const char* const SEND_ITEMS[] = {"Send to mom", "Send to dad", "Send to both", "Go back"};
     const char* const SEND_TO[]    = {"mom", "dad", "both"};
     static const int SEND_BACK = 3;
@@ -62,6 +63,15 @@ code:
     uint16_t statusColor = ATECH_FG;
     unsigned long statusUntil = 0;     // when the status screen closes; 0 = waiting for the hub
     unsigned long checkinSentAt = 0;   // 0 = no check-in waiting for a result
+
+    // ---------- Translator: picked in the main menu, the knob turns it off ----------
+    // While it's on, the back seat speaks their own language on their board (port 9) and the
+    // driver hears it in English; the driver's voice button (port 5) replies in English and the
+    // back seat hears it in their language. The hub does the work (Gemini); this board only
+    // announces the mode, retained on car/translator {"on":true|false}, and shows the language
+    // the hub heard (car/translator/lang, retained, e.g. "Spanish").
+    bool translatorOn = false;
+    String translatorLang;
 
     // ---------- Accident detection: orientation sensor (IMU) on port 9 ----------
     // Crash: total acceleration over CRASH_G (the sensor tops out at 2 g per axis, about
@@ -138,10 +148,22 @@ code:
       return ACC_NONE;
     }
 
-    int menuCount() { return menu == MENU_MAIN ? 1 : 4; }
+    int menuCount() { return menu == MENU_MAIN ? 2 : 4; }
     const char* menuItem(int i) { return menu == MENU_MAIN ? MAIN_ITEMS[i] : SEND_ITEMS[i]; }
 
     void openMenu(CheckinMenu m) { menu = m; menuSel = 0; menuDirty = true; }
+    // Where a closed status screen goes back to: the translator screen while it's on.
+    void homeMenu() { openMenu(translatorOn ? MENU_TRANSLATOR : MENU_MAIN); }
+
+    extern volatile bool playFlush;          // voice section below: drops what the speaker still has queued
+    void setTranslator(bool on) {
+      translatorOn = on;
+      translatorLang = "";                   // learned again from the back seat's first words
+      if (!on) playFlush = true;             // cancelled: stop a translation that's still playing
+      if (mqtt.connected()) mqtt.publish("car/translator", on ? "{\"on\":true}" : "{\"on\":false}", true);
+      logLine(on ? "translator: on" : "translator: off");
+      homeMenu();
+    }
 
     void showStatus(const char* title, const String& body, uint16_t color, unsigned long ms) {
       menu = MENU_STATUS;
@@ -176,6 +198,18 @@ code:
         screen.fillRoundRect(62, 38, w - 66, 26, 4, ATECH_ACCENT);
         screen.displayText("I'm ok", 74, 43, 2, ATECH_FG);
         screen.displayText("press the knob", 64, 69, 1, ATECH_MUTED);
+      } else if (menu == MENU_TRANSLATOR) {
+        screen.displayText("Translator", 6, 3, 1, ATECH_MUTED);
+        screen.drawLine(0, 13, w - 1, 13, ATECH_HAIRLINE);
+        screen.displayText("Translator ON", 6, 19, 2, ATECH_OK);
+        if (translatorLang.length()) {
+          screen.displayText(String("Back seat: ") + translatorLang, 6, 41, 1, ATECH_FG);
+          screen.displayText("Voice button: reply", 6, 54, 1, ATECH_MUTED);
+        } else {
+          screen.displayText("Waiting for the back", 6, 41, 1, ATECH_FG);
+          screen.displayText("seat to speak first", 6, 54, 1, ATECH_FG);
+        }
+        screen.displayText("Knob: stop translator", 6, 66, 1, ATECH_MUTED);
       } else if (menu == MENU_STATUS) {
         screen.displayText(statusTitle, 6, 8, 2, statusColor);
         screen.setTextSize(1);
@@ -286,12 +320,16 @@ code:
       }
       if (micFd < 0) { logLine("voice: no UDP socket"); return; }
       voiceSid = esp_random(); micSeq = 0;
-      char start[48]; snprintf(start, sizeof start, "{\"sr\":16000,\"sid\":%lu}", (unsigned long)voiceSid);
+      // "tr": this board's translator mode. The hub follows it, so a reply is never taken for a command.
+      char start[64]; snprintf(start, sizeof start, "{\"sr\":16000,\"sid\":%lu,\"tr\":%s}", (unsigned long)voiceSid, translatorOn ? "true" : "false");
       mqtt.publish("car/atech/voice/start", start);
       listening = true; listenAt = millis();
       voicebtn.setColor(0, 255, 0);
       spk.playNote(NOTE_C5, 70); spk.playNote(NOTE_G5, 90);
-      if (!screenBusy()) showStatus("Listening...", "Hey car, send a message to mom, ... / ask Google ... Release, or tap again, to finish.", ATECH_OK, 0);
+      if (!screenBusy()) {
+        if (translatorOn) showStatus("Listening...", "Reply in English for the back seat. Release, or tap again, to send.", ATECH_OK, 0);
+        else showStatus("Listening...", "Hey car, send a message to mom, ... / ask Google ... Release, or tap again, to finish.", ATECH_OK, 0);
+      }
       logLine("voice: listening");
     }
 
@@ -396,6 +434,8 @@ code:
         if (blind != cameraBlind) { cameraBlind = blind; menuDirty = true; }
       } else if (t == "car/atech/voice/status") {
         onVoiceStatus(p);
+      } else if (t == "car/translator/lang") {
+        if (p != translatorLang) { translatorLang = p; if (menu == MENU_TRANSLATOR) menuDirty = true; }
       }
     }
 
@@ -466,6 +506,8 @@ code:
               mqtt.subscribe("car/atech/voice/stop");
               mqtt.subscribe("car/atech/voice/status");
               mqtt.subscribe("car/vision/camera");
+              mqtt.subscribe("car/translator/lang");
+              mqtt.publish("car/translator", translatorOn ? "{\"on\":true}" : "{\"on\":false}", true);   // after a reboot: off
               logLine("mqtt: connected");
             } else {
               logLine("mqtt: connect failed");
@@ -637,12 +679,13 @@ code:
     }
 
     if (knobPressed) {
-      if (menu == MENU_MAIN) openMenu(MENU_SEND);
-      else if (menu == MENU_SEND) { if (menuSel == SEND_BACK) openMenu(MENU_MAIN); else sendCheckin(menuSel); }
-      else if (statusUntil) openMenu(MENU_MAIN);   // a press closes a result early
+      if (menu == MENU_MAIN) { if (menuSel == MAIN_TRANSLATOR) setTranslator(true); else openMenu(MENU_SEND); }
+      else if (menu == MENU_TRANSLATOR) setTranslator(false);
+      else if (menu == MENU_SEND) { if (menuSel == SEND_BACK) homeMenu(); else sendCheckin(menuSel); }
+      else if (statusUntil) homeMenu();            // a press closes a result early
     }
     if (menu == MENU_STATUS) {
-      if (statusUntil && millis() > statusUntil) openMenu(MENU_MAIN);
+      if (statusUntil && millis() > statusUntil) homeMenu();
       if (checkinSentAt && millis() - checkinSentAt > CHECKIN_TIMEOUT_MS) {
         checkinSentAt = 0;
         showStatus("No reply", "The hub didn't answer. Is it running?", ATECH_ALERT, 5000);

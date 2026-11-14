@@ -46,10 +46,30 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "gemma4:e2b")       # Gemma 4 E2B: the o
 # (Only for Gemma: Ollama refuses "think" for models that can't think.)
 NO_THINK = {"think": False} if LLM_MODEL.startswith("gemma4") else {}
 OLLAMA_STORE = pathlib.Path(os.environ.get("OLLAMA_STORE", "/ollama/models"))   # Ollama's model volume
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small.en")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small.en")              # the driver: English only, the most accurate for it
+WHISPER_MULTI_MODEL = os.environ.get("WHISPER_MULTI_MODEL", "small")      # the back seat: any language, detected
 PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-lessac-medium")
+# Local voices for the back seat's language (Whisper's language code -> Piper voice). Portuguese is
+# Portugal's. Downloaded on first use (about 63 MB each); PREFETCH_LANGS are fetched at start.
+PIPER_VOICES = {"pt": "pt_PT-tugão-medium", "es": "es_ES-davefx-medium", "fr": "fr_FR-siwis-medium", "de": "de_DE-thorsten-medium",
+                "it": "it_IT-paola-medium", "fi": "fi_FI-harri-medium", "sv": "sv_SE-nst-medium", "nl": "nl_NL-mls-medium",
+                "no": "no_NO-talesyntese-medium", "da": "da_DK-talesyntese-medium", "pl": "pl_PL-gosia-medium", "cs": "cs_CZ-jirka-medium",
+                "ru": "ru_RU-irina-medium", "uk": "uk_UA-ukrainian_tts-medium", "ro": "ro_RO-mihai-medium", "el": "el_GR-rapunzelina-medium",
+                "hu": "hu_HU-anna-medium", "tr": "tr_TR-dfki-medium", "ca": "ca_ES-upc_ona-medium", "et": "et_EE-news-medium",
+                "zh": "zh_CN-huayan-medium", "ar": "ar_JO-kareem-medium", "vi": "vi_VN-vais1000-medium", "hi": "hi_IN-pratham-medium"}
+PIPER_VOICES.update(json.loads(os.environ.get("PIPER_VOICES") or "{}"))    # override or add: {"pt": "pt_BR-faber-medium"}
+PREFETCH_LANGS = os.environ.get("PREFETCH_LANGS", "pt").split(",")
+LANG_NAMES = {"en": "English", "pt": "Portuguese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "fi": "Finnish",
+              "sv": "Swedish", "nl": "Dutch", "no": "Norwegian", "da": "Danish", "pl": "Polish", "cs": "Czech", "ru": "Russian",
+              "uk": "Ukrainian", "ro": "Romanian", "el": "Greek", "hu": "Hungarian", "tr": "Turkish", "ca": "Catalan", "et": "Estonian",
+              "zh": "Chinese", "ar": "Arabic", "vi": "Vietnamese", "hi": "Hindi", "ja": "Japanese", "ko": "Korean"}
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+# Translator mode: Gemini hears the recording and translates it in one call; Gemini TTS speaks
+# the back seat's language (Piper only speaks English).
+TRANSLATE_MODEL = os.environ.get("TRANSLATE_MODEL", "gemini-3.8-flash")
+TTS_MODEL = os.environ.get("TTS_MODEL", "gemini-3.8-flash-tts")
+TTS_VOICE = os.environ.get("TTS_VOICE", "Kore")
 # Nemotron 3.5 Super VL (Verda endpoint) watches the in-car camera for danger near the driver.
 NEMOTRON_URL = os.environ.get("NEMOTRON_URL", "https://containers.datacrunch.io/nemotron-3-5-super-vl-b300/v1")
 NEMOTRON_MODEL = os.environ.get("NEMOTRON_MODEL", "nemotron-3.5-super-vl")
@@ -70,8 +90,10 @@ MIC_PORT = 1885            # the board sends mic audio here over UDP (see udp_lo
 def log(*a): print(time.strftime("%H:%M:%S"), "[voice]", *a, flush=True)
 
 # ---------- models ----------
-whisper = piper = vad = None
+whisper = whisper_multi = piper = vad = None
 whisper_lock = threading.Lock()
+voices = {}                # Whisper language code -> loaded PiperVoice ("en" is `piper`)
+voices_lock = threading.Lock()
 llm_ready = False
 
 def load_models():
@@ -83,16 +105,69 @@ def load_models():
     whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", cpu_threads=4)
     log(f"speech-to-text ready ({WHISPER_MODEL}, {time.time() - t:.0f}s)")
     vad = fw_vad
-    lang, region, name, quality = re.match(r"(\w+)_(\w+)-(\w+)-(\w+)", PIPER_VOICE).groups()
+    piper = load_voice(PIPER_VOICE)
+    voices["en"] = piper
+    log("text-to-speech ready", PIPER_VOICE)
+
+def load_voice(voice):
+    # A Piper voice from Hugging Face (downloaded once into the data volume).
+    import urllib.parse
+    from piper import PiperVoice
+    lang, region, name, quality = re.match(r"(\w+)_(\w+)-(\w+)-(\w+)", voice).groups()
     vdir = DATA / "piper"; vdir.mkdir(parents=True, exist_ok=True)
-    base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang}/{lang}_{region}/{name}/{quality}/{PIPER_VOICE}"
+    base = "https://huggingface.co/rhasspy/piper-voices/resolve/main/" + urllib.parse.quote(f"{lang}/{lang}_{region}/{name}/{quality}/{voice}")
     for ext in (".onnx", ".onnx.json"):
-        f = vdir / (PIPER_VOICE + ext)
+        f = vdir / (voice + ext)
         if not f.exists():
             log("downloading voice", f.name)
             urllib.request.urlretrieve(base + ext, str(f) + ".part"); os.rename(str(f) + ".part", f)
-    piper = PiperVoice.load(vdir / (PIPER_VOICE + ".onnx"))
-    log("text-to-speech ready", PIPER_VOICE)
+    return PiperVoice.load(vdir / (voice + ".onnx"))
+
+# Local voices by regional variety (BCP-47). Used first wherever the back seat's variety is known:
+# a real Portugal voice says Portugal Portuguese, where Gemini's voice drifts to Brazilian.
+VARIETY_VOICES = {"pt-PT": "pt_PT-tugão-medium", "pt-BR": "pt_BR-faber-medium", "es-ES": "es_ES-davefx-medium",
+                  "es-MX": "es_MX-claude-high", "es-AR": "es_AR-daniela-high", "nl-BE": "nl_BE-nathalie-medium", "en-GB": "en_GB-alba-medium"}
+voices_by_name = {}
+
+def voice_for_variety(code):
+    # The local voice for exactly that variety ("pt-PT"), or None: never another country's voice.
+    base, _, region = code.partition("-")
+    name = VARIETY_VOICES.get(f"{base.lower()}-{region.upper()}")
+    if not name and not region and base.lower() in PIPER_VOICES: return voice_for(base.lower())   # no region known: the default
+    if not name and region and PIPER_VOICES.get(base.lower(), "").startswith(f"{base.lower()}_{region.upper()}-"): return voice_for(base.lower())
+    if not name: return None
+    if PIPER_VOICES.get(base.lower()) == name: return voice_for(base.lower())       # already loaded as the language's default
+    with voices_lock:
+        if name not in voices_by_name:
+            try: voices_by_name[name] = load_voice(name); log(f"voice ready for {code}: {name}")
+            except Exception as e: log(f"voice for {code} failed: {e!r}"); return None
+    return voices_by_name[name]
+
+def voice_for(lang):
+    # The local voice for a language, loaded (and downloaded) on first use; None if there's none.
+    if lang in voices: return voices[lang]
+    if lang not in PIPER_VOICES: return None
+    with voices_lock:
+        if lang not in voices:
+            try:
+                voices[lang] = load_voice(PIPER_VOICES[lang]); log(f"voice ready for {lang}: {PIPER_VOICES[lang]}")
+            except Exception as e:
+                log(f"voice for {lang} failed: {e!r}"); return None
+    return voices[lang]
+
+def load_multilingual():
+    # The back seat's Whisper (any language): loaded after the driver's, in the background. Until it's
+    # ready the back seat uses the English model, as before. Then the prefetched voices.
+    global whisper_multi
+    from faster_whisper import WhisperModel
+    try:
+        t = time.time()
+        whisper_multi = WhisperModel(WHISPER_MULTI_MODEL, device="cpu", compute_type="int8", cpu_threads=4)
+        log(f"multilingual speech-to-text ready ({WHISPER_MULTI_MODEL}, {time.time() - t:.0f}s)")
+    except Exception as e:
+        log("multilingual speech-to-text failed, the back seat stays English-only:", repr(e))
+    for lang in PREFETCH_LANGS:
+        if lang.strip(): voice_for(lang.strip())
 
 def ollama(path, body, timeout=60):
     req = urllib.request.Request(OLLAMA_URL + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
@@ -176,16 +251,16 @@ send_results = {}          # message id -> hub's reply
 send_done = threading.Condition(lock)
 here = threading.local()   # .board: the board the request being handled came from
 
-def status(title, body="", color="fg", ms=8000):
+def status(title, body="", color="fg", ms=8000, board=None):
     # Shown on the driver board's screen. ASCII only, no quotes (the board's parser is simple).
     # The passenger board has no screen, and its requests never show on the driver's.
-    if getattr(here, "board", "driver") != "driver": return
+    if (board or getattr(here, "board", "driver")) != "driver": return
     clean = lambda s: re.sub(r'[^\x20-\x7e]', '', s.replace('"', "'").replace("\\", "/"))
     client.publish("car/atech/voice/status", json.dumps({"title": clean(title)[:13], "body": clean(body)[:200], "color": color, "ms": ms}))
 
 def on_connect(c, userdata, flags, rc, props=None):
     log("MQTT connected", rc)
-    c.subscribe([("car/atech/voice/#", 0), ("car/passenger/voice/#", 0), ("car/voice/send/result", 1)])
+    c.subscribe([("car/atech/voice/#", 0), ("car/passenger/voice/#", 0), ("car/voice/send/result", 1), ("car/translator", 1)])
 
 def on_message(c, userdata, m):
     board = next((b for b, t in BOARD_TOPIC.items() if m.topic.startswith(t + "/")), None)
@@ -194,10 +269,15 @@ def on_message(c, userdata, m):
     except Exception: data = None
     if board and m.topic.endswith("/start"):
         sid = (data or {}).get("sid")
+        # The driver board owns translator mode and sends it with every press ("tr"): follow it, in
+        # case the hub missed a change (restart, lost message).
+        if board == "driver" and isinstance((data or {}).get("tr"), bool) and data["tr"] != translator["on"]:
+            log("translator state from the driver's press:", data["tr"])
+            set_translator(data["tr"], announce=False)
         with lock:
             s = sessions[board] = {"id": uuid.uuid4().hex[:8], "board": board, "sid": sid, "chunks": early.pop(sid, {}),
-                                   "listening": True, "started": time.time()}
-        log(f"listening ({board})", s["id"])
+                                   "listening": True, "started": time.time(), "translate": translator["on"]}
+        log(f"listening ({board}{', translator' if s['translate'] else ''})", s["id"])
         threading.Thread(target=listen, args=(s,), daemon=True).start()
     elif board and m.topic.endswith("/end"):
         reason = (data or {}).get("reason")
@@ -206,6 +286,8 @@ def on_message(c, userdata, m):
             s = sessions.get(board)
             if reason == "accident": sessions.pop(board, None)   # cut off mid-sentence: never act on half a request
             elif s: s["listening"] = False
+    elif m.topic == "car/translator" and isinstance(data, dict):
+        if bool(data.get("on")) != translator["on"]: set_translator(bool(data.get("on")))
     elif m.topic == "car/voice/send/result" and isinstance(data, dict):
         with lock:
             send_results[data.get("id")] = data
@@ -297,6 +379,23 @@ def transcribe(pcm):
     log(f"heard in {time.time() - t:.1f}s: {text!r}")
     return fix_names(WAKE.sub("", text).strip())
 
+def transcribe_any(pcm):
+    # The back seat: any language. -> (text, Whisper's language code). English-only model until the
+    # multilingual one is loaded.
+    if whisper_multi is None: return transcribe(pcm), "en"
+    audio = to_float(pcm)
+    if vad and not vad.get_speech_timestamps(audio, vad.VadOptions(threshold=0.5)):
+        log("no speech in the recording")
+        return "", "en"
+    t = time.time()
+    with whisper_lock:
+        segs, info = whisper_multi.transcribe(audio, beam_size=3, vad_filter=False)
+        text = " ".join(x.text.strip() for x in segs).strip()
+    lang = info.language or "en"
+    log(f"heard ({lang}, {info.language_probability:.2f}) in {time.time() - t:.1f}s: {text!r}")
+    text = WAKE.sub("", text).strip()
+    return (fix_names(text) if lang == "en" else text), lang
+
 # ---------- what does the driver want? ----------
 ACTIONS = ["send_message", "ask_google", "directions", "light", "answer", "unclear"]
 NAMES_GOOGLE = re.compile(r"\b(?:google|gemini)\b", re.I)   # the only way a request goes online
@@ -362,22 +461,25 @@ def fallback(text):
     if m: return {"action": "light", "on": (m.group(1) or m.group(2)).lower() == "on"}
     return {"action": "unclear"}
 
-def local_answer(text):
+def local_answer(text, lang="en"):
+    where = "" if lang == "en" else (f" Answer in {LANG_NAMES.get(lang, lang)}, in the same regional variety as the question"
+                                     + (" (European Portuguese, as in Portugal, unless the question is clearly Brazilian)" if lang == "pt" else "") + ".")
     r = ollama("/api/chat", {"model": LLM_MODEL, "stream": False, "keep_alive": -1, **NO_THINK,
-                             "options": {"temperature": 0.3, "num_predict": 120},
-                             "messages": [{"role": "system", "content": "You are a car's voice assistant. Answer in one or two short spoken sentences. No lists or symbols."},
+                             "options": {"temperature": 0.3, "num_predict": 160},
+                             "messages": [{"role": "system", "content": "You are a car's voice assistant. Answer in one or two short spoken sentences. No lists or symbols." + where},
                                           {"role": "user", "content": text}]}, timeout=30)
     return r["message"]["content"].strip()
 
 # ---------- actions ----------
 def handle(s, pcm):
     status("Thinking...", "", "fg", 30000)
+    if s.get("translate"): return translate_turn(s, pcm)
+    if s["board"] == "passenger": return handle_passenger(s, pcm)
     text = transcribe(pcm)
     if not current(s): return
     if not text:
         return say(s, "Sorry, I didn't catch that.", "Sorry", "Didn't catch that. Press the button and try again.", "warn")
     status("Heard", text, "fg", 30000)
-    if s["board"] == "passenger": return handle_passenger(s, text)
     if answer_who(s, text): return
     intent = understand(text)
     if not current(s): return
@@ -409,21 +511,43 @@ def handle(s, pcm):
 # those are refused here whatever the model decided, and Gemini gets none of those functions.
 PASSENGER_ONLY_ASK = "From the back seat I can only answer questions. Ask the driver for that."
 
-def handle_passenger(s, text):
-    log("back seat asked:", text)
+# The back seat may speak any language: Whisper names it, and the answer comes back in it. Without
+# "Google" everything stays in the car (Gemma answers, a local Piper voice reads it); with "Google"
+# Gemini answers in their language and its own voice reads it.
+def handle_passenger(s, pcm):
+    text, lang = transcribe_any(pcm)
+    if not current(s): return
+    if lang not in voices and voice_for(lang) is None: lang_out = "en"     # no local voice for it: English
+    else: lang_out = lang
+    if not text: return say_in(s, lang_out, "Sorry, I didn't catch that.")
+    log(f"back seat asked ({lang}):", text)
+    if NAMES_GOOGLE.search(text): return ask_google(s, text, lang=lang)
     intent = understand(text)
     if not current(s): return
     act = intent.get("action")
     if act in ("send_message", "light", "directions"):
         log(f"back seat: {act} refused")
-        return say(s, PASSENGER_ONLY_ASK, "", "", "warn")
+        return say_in(s, lang_out, PASSENGER_ONLY_ASK)
     if act == "ask_google":
-        if NAMES_GOOGLE.search(text): return ask_google(s, text)
-        return say(s, "I can't check that offline. Say 'ask Google' to look it up.", "", "", "warn")
+        return say_in(s, lang_out, "I can't check that offline. Say 'ask Google' to look it up.")
     if act == "answer":
-        reply = (intent.get("reply") or "").strip() or local_answer(text)
-        return say(s, reply, "", "", "fg")
-    say(s, "Sorry, I didn't understand. Press the button and ask your question again.", "", "", "warn")
+        reply = ((intent.get("reply") or "").strip() if lang_out == "en" else "") or local_answer(text, lang_out)
+        return say(s, reply, "", "", "fg", lang=lang_out)
+    say_in(s, lang_out, "Sorry, I didn't understand. Press the button and ask your question again.")
+
+def say_in(s, lang, english):
+    # A fixed reply in the back seat's language, translated by the local model (English if it can't).
+    text = english
+    if lang != "en" and llm_ready:
+        try:
+            r = ollama("/api/chat", {"model": LLM_MODEL, "stream": False, "keep_alive": -1, **NO_THINK,
+                                     "options": {"temperature": 0, "num_predict": 120},
+                                     "messages": [{"role": "system", "content": f"Translate the user's text into {LANG_NAMES.get(lang, lang)}"
+                                                   " (for Portuguese: as spoken in Portugal). Keep the word Google. Reply with the translation only."},
+                                                  {"role": "user", "content": english}]}, timeout=20)
+            text = r["message"]["content"].strip() or english
+        except Exception as e: log("translating a reply failed:", e)
+    say(s, text, "", "", "warn", lang=lang if text != english else "en")
 
 # Whisper's usual mishearings of the contact names ("send dad" -> "send dead").
 NAME_FIXES = [(re.compile(r"\b(send|sent|tell|text|message|to)\s+(?:a\s+message\s+to\s+)?dead\b", re.I), r"\1 dad"),
@@ -664,7 +788,7 @@ def gemini_call(contents, system, loc, functions):
             "tools": [{"google_search": {}}, {"google_maps": {}}, {"function_declarations": functions}]}
     req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
                                  data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY})
-    with urllib.request.urlopen(req, timeout=45) as r: return json.load(r)
+    with urllib.request.urlopen(req, timeout=25) as r: return json.load(r)   # each step; a failure mustn't hang for long
 
 def run_function(name, args, said="", board="driver"):
     if board != "driver" and name not in PASSENGER_FUNCTIONS:
@@ -695,12 +819,16 @@ def run_function(name, args, said="", board="driver"):
         return {"ok": True, **v}
     return {"ok": False, "error": f"no function {name}"}
 
-def ask_google(s, query):
+ONE_MOMENT = {"pt": "Um momento.", "es": "Un momento.", "fr": "Un instant.", "de": "Einen Moment.", "it": "Un momento.",
+              "fi": "Hetki.", "sv": "Ett ögonblick.", "nl": "Een moment.", "pl": "Chwileczkę.", "da": "Et øjeblik.", "no": "Et øyeblikk."}
+
+def ask_google(s, query, lang="en"):
     if not GEMINI_KEY:
         return say(s, "Google isn't set up yet. Add a Gemini API key to the hub's secrets.", "No Google key",
                    "Add gemini_api_key to jetson-hub/secrets.json", "alert")
     status("Asking Google", query, "fg", 45000)
-    say(s, "One moment.", "Asking Google", query, "fg")      # a tool chain can take a while: no silent wait
+    if lang == "en": say(s, "One moment.", "Asking Google", query, "fg")      # a tool chain can take a while: no silent wait
+    elif lang in ONE_MOMENT and voice_for(lang): say(s, ONE_MOMENT[lang], "", "", "fg", lang=lang)
     loc = phone_location()
     passenger = s["board"] == "passenger"
     functions = [f for f in GEMINI_FUNCTIONS if not passenger or f["name"] in PASSENGER_FUNCTIONS]
@@ -715,10 +843,14 @@ def ask_google(s, query):
            "Google Maps for places, opening hours, distances and routes. When the driver wants to go somewhere, find the place with "
            "Google Maps, then call show_directions with its name and address. Use the car's functions when the driver asks for an "
            f"action (contacts: {', '.join(CONTACTS) or 'mom, dad'}). ")
+    if passenger and lang != "en":
+        who += (f"The passenger speaks {LANG_NAMES.get(lang, lang)}: answer in that language and in the same regional variety they used"
+                + (" (European Portuguese, as in Portugal, unless they clearly speak Brazilian Portuguese)" if lang == "pt" else "") + ". ")
     system = (who + "Never invent results: if a tool failed, say so. "
               "The request comes from speech recognition of someone who isn't a native speaker of the local language: place names may be "
               "spelled the way they sound in English (\"campy\" for Kamppi); look for the real place nearby that sounds like it. "
-              "Your final answer is read aloud in the moving car: at most three short sentences, plain words, no lists, markdown, links or emoji. "
+              "Your final answer is read aloud in the moving car, so keep it succinct: answer the question directly in one short sentence,"
+              " two only if really needed. No background, extra options, history or caveats unless asked. Plain words, no lists, markdown, links or emoji. "
               f"Now (UTC): {time.strftime('%A %d %B %Y, %H:%M', time.gmtime())}.{where}")
     _, heard, name = fix_place(query, in_sentence=True)
     if name: log(f"place name for Gemini: heard {heard!r}, maybe {name!r}")
@@ -760,6 +892,18 @@ def ask_google(s, query):
     answer = re.sub(r"[*_#`]|\[\d+\]", "", answer)
     log(f"Gemini answered in {time.time() - t:.1f}s: {answer!r}")
     if not answer: return say(s, "Google had no answer for that.", "No answer", query, "warn")
+    if lang != "en":
+        # Their language, in Gemini's voice (they said "Google": it may go online); the local voice if that fails.
+        code = DEFAULT_VARIETY.get(lang, lang)
+        v = voice_for_variety(code)
+        if v: return say(s, answer, "Google", answer, "fg", voice=v)       # a local voice of their variety: the right accent
+        try: pcm = gemini_tts(answer, code if "-" in code else "")
+        except Exception as e:
+            log("Gemini voice failed, using the local one:", repr(e)); return say(s, answer, "Google", answer, "fg", lang=lang)
+        if not current(s): return
+        log(f"saying ({s['board']}, Gemini voice):", answer)
+        q = queue.Queue(); q.put(pcm); q.put(None)
+        return stream(s, q)
     say(s, answer, "Google", answer, "fg")
 
 # ---------- text to speech, streamed to the board's speaker ----------
@@ -780,23 +924,28 @@ def louder(pcm16):
     a = np.tanh(VOICE_DRIVE * a) / np.tanh(VOICE_DRIVE)        # peaks at 1.0, quiet parts up to ~2x
     return (a * VOICE_PEAK * 32767).astype(np.int16)
 
-def say(s, text, title, body, color):
+def say(s, text, title, body, color, lang="en", voice=None):
     if not current(s): return
-    log("saying:", text)
-    status(title, body, color, 15000)
-    if piper is None: return
+    log(f"saying ({s['board']}{'' if lang == 'en' else ', ' + lang}):", text)
+    status(title, body, color, 15000, board=s["board"])
+    voice = voice or voices.get(lang) or voice_for(lang) or piper
+    if voice is None: return
     import soxr
     q = queue.Queue(maxsize=8)
     def synth():
         try:
-            for chunk in piper.synthesize(text):
+            for chunk in voice.synthesize(text):
                 if not current(s): break
                 pcm = soxr.resample(chunk.audio_int16_array, chunk.sample_rate, SR)
                 q.put(louder(np.asarray(pcm, dtype=np.int16)).astype("<i2").tobytes())
         except Exception as e: log("text-to-speech failed:", e)
         finally: q.put(None)
     threading.Thread(target=synth, daemon=True).start()
-    topic = BOARD_TOPIC[s["board"]] + "/pcm"                  # the speaker of the board that asked
+    stream(s, q)
+
+def stream(s, q):
+    # Sends 16 kHz PCM from the queue (None ends it) to the speaker of the session's board, just ahead of playback.
+    topic = BOARD_TOPIC[s["board"]] + "/pcm"
     start, sent = None, 0.0
     while (pcm := q.get()) is not None:
         # If the next sentence took longer to make than the board had buffered, the speaker
@@ -809,6 +958,167 @@ def say(s, text, title, body, color):
             part = pcm[i:i + PCM_CHUNK]
             client.publish(topic, part)
             sent += len(part) / 2 / SR
+
+# ---------- translator: the back seat's language <-> English for the driver ----------
+# The driver turns it on in the screen menu (car/translator). Then the back seat speaks their own
+# language on their board: Gemini hears the recording, names the language and translates it, and
+# the driver hears it in English (Piper, on the driver's speaker). The driver's voice button then
+# replies in English: Gemini translates it into the back seat's language and Gemini TTS speaks it
+# on the back-seat speaker. While it's on, presses are only translated: no commands, no messages.
+# Only in this mode does the recorded speech go to Google.
+translator = {"on": False, "lang": "", "code": ""}
+
+def set_translator(on, announce=True):
+    translator.update(on=on, lang="", code="")               # each time: the back seat's language is learned again
+    client.publish("car/translator/lang", "", qos=1, retain=True)
+    log("translator", "on" if on else "off")
+    if not on:
+        # Cancelled: drop whatever is still being translated or played, on both boards.
+        with lock:
+            for b, x in list(sessions.items()):
+                if x.get("translate") or x["id"] == "relay": sessions.pop(b, None)
+        client.publish("car/passenger/voice/done", "{}")          # the back seat's button stops waiting
+    if announce:   # on the back-seat speaker; while it's on, their button flashes until they press it (passenger firmware)
+        threading.Thread(target=speak_on, args=("passenger", "Translator on." if on else "Translator off."), daemon=True).start()
+FROM_BACK_SCHEMA = {"type": "object", "properties": {"heard": {"type": "string"}, "language": {"type": "string"},
+                    "code": {"type": "string"}, "english": {"type": "string"}}, "required": ["heard", "language", "code", "english"]}
+TO_BACK_SCHEMA = {"type": "object", "properties": {"heard": {"type": "string"}, "translation": {"type": "string"}},
+                  "required": ["heard", "translation"]}
+
+def short_lang(lang, code):
+    # For the driver's 26-character screen line: "Portuguese (Portugal)" -> "Portuguese (PT)".
+    base, _, _ = lang.partition(" (")
+    region = code.split("-")[1].upper() if "-" in code else ""
+    return (f"{base} ({region})" if region and "(" in lang else lang)[:15]
+
+def gemini_post(model, body, timeout=45):
+    req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                 data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY})
+    with urllib.request.urlopen(req, timeout=timeout) as r: return json.load(r)
+
+def to_wav(audio):
+    import io, wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+        w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+    return buf.getvalue()
+
+def gemini_hear(prompt, wav, schema):
+    import base64
+    res = gemini_post(TRANSLATE_MODEL, {
+        "contents": [{"parts": [{"text": prompt}, {"inlineData": {"mimeType": "audio/wav", "data": base64.b64encode(wav).decode()}}]}],
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0,
+                             "thinkingConfig": {"thinkingBudget": 0}}})                # a translation, not an essay: answer at once
+    parts = ((res.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+    return json.loads(next((p["text"] for p in reversed(parts) if "text" in p), "{}"))
+
+# Gemini's voice drifts to Brazilian for Portuguese, and it reads any accent direction out loud (it
+# takes no system instruction), so it's only used when there's no local voice for the variety, with
+# just the language code.
+DEFAULT_VARIETY = {"pt": "pt-PT"}    # Whisper names only the language: the back seat is from Portugal
+
+def gemini_tts(text, code=""):
+    # Gemini's voice for the back seat's language -> 16 kHz int16 PCM for the board. "code" (BCP-47,
+    # with the region: pt-PT, not pt) keeps the accent of the back seat's own variety; if Gemini
+    # doesn't take that code, the text alone still decides (it's written in that variety).
+    import base64, io, wave, soxr
+    speech = {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": TTS_VOICE}}}
+    body = lambda sc: {"contents": [{"parts": [{"text": text}]}], "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": sc}}
+    try: res = gemini_post(TTS_MODEL, body({**speech, "languageCode": code} if code else speech))
+    except urllib.error.HTTPError as e:
+        if not code or e.code != 400: raise
+        log(f"translator: TTS refused language code {code!r}, using the text alone")
+        res = gemini_post(TTS_MODEL, body(speech))
+    inline = next(p["inlineData"] for p in res["candidates"][0]["content"]["parts"] if "inlineData" in p)
+    data = base64.b64decode(inline["data"])
+    if data[:4] == b"RIFF":
+        with wave.open(io.BytesIO(data)) as w: rate, data = w.getframerate(), w.readframes(w.getnframes())
+    else:                                        # raw PCM: "audio/L16;codec=pcm;rate=24000"
+        m = re.search(r"rate=(\d+)", inline.get("mimeType", "")); rate = int(m.group(1)) if m else 24000
+    pcm = soxr.resample(np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2"), rate, SR)
+    return louder(np.asarray(pcm, dtype=np.int16)).astype("<i2").tobytes()
+
+def speak_on(board, text, title="", body="", color="fg", pcm=None, voice=None):
+    # Speak on another board than the one that asked: the driver hears the back seat, and back.
+    # Waits (up to 25 s) while that board is listening, so it never talks over a press.
+    t = time.time()
+    while time.time() - t < 25:
+        with lock:
+            busy = sessions.get(board) and sessions[board]["listening"]
+            if not busy:
+                s = sessions[board] = {"id": "relay", "board": board, "sid": None, "chunks": {}, "listening": False, "started": time.time()}
+                break
+        time.sleep(0.2)
+    else:
+        log(f"translator: {board} kept talking, dropped: {text!r}"); return
+    if pcm is None: return say(s, text, title, body, color, voice=voice)
+    log(f"saying ({board}, Gemini voice):", text)
+    status(title, body, color, 15000, board=board)
+    q = queue.Queue(); q.put(pcm); q.put(None)
+    stream(s, q)
+
+def translate_turn(s, pcm):
+    if not GEMINI_KEY:
+        return say(s, "The translator needs Google. Add a Gemini API key to the hub's secrets.", "No Google key",
+                   "Add gemini_api_key to jetson-hub/secrets.json", "alert")
+    audio = to_float(pcm)
+    if vad and not vad.get_speech_timestamps(audio, vad.VadOptions(threshold=0.5)):
+        log("translator: no speech in the recording")
+        return say(s, "Sorry, I didn't catch that.", "Sorry", "No speech heard. Press and try again.", "warn")
+    wav, t = to_wav(audio), time.time()
+    try:
+        if s["board"] == "passenger":
+            hint = f" Last time they spoke {translator['lang']}." if translator["lang"] else ""
+            r = gemini_hear("This is a recording of a passenger in the back seat of a car, talking to the driver in their own language."
+                            + hint + " heard: exactly what they said, in the original language and its usual script. language: that"
+                            " language's English name with the regional variety they speak, judged from their accent, words and grammar,"
+                            " e.g. 'Portuguese (Portugal)' or 'Portuguese (Brazil)', 'Spanish (Spain)' or 'Spanish (Mexico)', 'French"
+                            " (France)'; just the language if you can't tell. code: its BCP-47 code with the region when known (pt-PT,"
+                            " pt-BR, es-ES, es-MX, fr-FR). english: a natural, faithful English translation for the driver, in the first"
+                            " person as they said it, with nothing added. If there is no clear speech, use empty strings.",
+                            wav, FROM_BACK_SCHEMA)
+            english, lang = str(r.get("english", "")).strip(), str(r.get("language", "")).strip()
+            log(f"translator: back seat ({lang}, {time.time() - t:.1f}s): {r.get('heard')!r} -> {english!r}")
+            if not current(s) or not translator["on"]: return            # cancelled meanwhile
+            if not english: return say(s, "Sorry, I didn't catch that.", "", "", "warn")
+            if lang and lang != translator["lang"]:
+                code = str(r.get("code", "")).strip()
+                translator.update(lang=lang, code=code)
+                client.publish("car/translator/lang", short_lang(lang, code), qos=1, retain=True)
+            client.publish("car/passenger/voice/done", "{}")          # passed on: chime, and the back seat's light goes off
+            speak_on("driver", english, (lang.split(" (")[0] or "Back seat")[:13], english, "fg")
+        else:
+            if not translator["lang"]:
+                return say(s, "The back seat hasn't spoken yet, so I don't know their language. Ask them to press their button first.",
+                           "Translator", "Waiting for the back seat to speak first.", "warn")
+            lang, code = translator["lang"], translator["code"]
+            status("Translating...", f"To {lang}", "fg", 30000)
+            r = gemini_hear(f"This is a recording of the driver of a car replying in English to a passenger in the back seat who speaks {lang}"
+                            f" ({code}). heard: exactly what the driver said, leaving out a leading 'hey car'. translation: a natural,"
+                            f" faithful translation into exactly that variety, {lang}: its grammar, words, spelling and forms of address,"
+                            " as someone from there says it, never another country's variety (for Portugal: 'estamos a chegar', 'autocarro',"
+                            " 'casa de banho', 'tu'/'você' as used in Portugal; not Brazilian forms). In its usual script, in the first person"
+                            " as the driver said it, with nothing added. If there is no clear speech, use empty strings.", wav, TO_BACK_SCHEMA)
+            heard, said = str(r.get("heard", "")).strip(), str(r.get("translation", "")).strip()
+            log(f"translator: driver -> {lang} ({time.time() - t:.1f}s): {heard!r} -> {said!r}")
+            if not current(s) or not translator["on"]: return            # cancelled meanwhile
+            if not said: return say(s, "Sorry, I didn't catch that.", "Sorry", "No speech heard. Press and try again.", "warn")
+            status(f"To {lang.split(' (')[0]}"[:13], heard, "ok", 15000)
+            if code.lower().startswith("en"): return speak_on("passenger", said)     # English: the local voice is enough
+            v = voice_for_variety(code) if code else None        # a local voice of their own variety, if there is one
+            if v:
+                if translator["on"]: speak_on("passenger", said, voice=v)
+                return
+            pcm = gemini_tts(said, code if "-" in code else "")
+            if translator["on"]: speak_on("passenger", said, pcm=pcm)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:300]
+        log("translator: Gemini error", e.code, detail)
+        say(s, "The translator didn't get an answer from Google.", "Google error", f"HTTP {e.code}", "alert")
+    except OSError as e:
+        log("translator: Gemini unreachable:", e)
+        say(s, "I can't reach Google right now. Is the car online?", "Offline", str(e)[:100], "alert")
 
 # ---------- Nemotron: watch the cabin for danger near the driver ----------
 # One request in flight at a time: fetch the newest frame from vision.py only when the previous
@@ -974,5 +1284,6 @@ threading.Thread(target=watch_loop, daemon=True).start()
 threading.Thread(target=places_loop, daemon=True).start()
 load_models()
 models_loaded.set()
+threading.Thread(target=load_multilingual, daemon=True).start()
 log("voice ready" + ("" if GEMINI_KEY else " (no Gemini key: 'ask Google' is off)"))
 while True: time.sleep(3600)

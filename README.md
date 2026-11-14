@@ -39,6 +39,13 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 
 `deploy.py` runs the app's `make_compose.py`, which generates `compose.yml` with the code and secrets embedded. Then it runs `wendy run --detach` and follows the logs until the app is up. The device defaults to `wendyos-hackathon-device-4.local`; set `WENDY_DEVICE` to override it. Each run's `compose.yml` is generated and holds secrets, so it isn't committed.
 
+### The back seat's language
+
+- The back-seat button understands any language: its speech-to-text is the multilingual Whisper `small` (the driver's stays `small.en`, the most accurate for English), loaded in the background after start (first start downloads about 480 MB; until then the back seat is English-only).
+- Without "Google", everything stays in the car: Gemma answers in the passenger's language and a local Piper voice reads it (`pt_PT-tugão-medium` for Portuguese, which is Portugal's; Spanish, French, German, Italian, Finnish, Swedish and about 20 more; `PIPER_VOICES` in `voice.py`). Each voice downloads on first use (about 63 MB); Portuguese is fetched at start (`prefetch_langs`). A language with no local voice gets English.
+- With "Google" (or "Gemini") in the question, in any language ("Pergunta ao Google ..."), Gemini answers in the passenger's language and variety and its own voice reads it. The answer is read by the local voice of their variety when there is one (`pt_PT-tugão` for Portugal): Gemini's own voice drifts to a Brazilian accent and reads any accent direction aloud, so it's only used for varieties with no local voice. Whisper only names the language, and Portuguese is taken to be Portugal's.
+- Overrides in `jetson-hub/secrets.json`: `whisper_multi_model`, `prefetch_langs` (list), `piper_voices` (e.g. `{"pt": "pt_BR-faber-medium"}`).
+
 ## Two boards on the Jetson's USB
 
 - **Board 1, the driver's** (`atech-flasher/project.yaml`): everything below except the intercom.
@@ -49,9 +56,22 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 ## Back-seat intercom (board 2: button on port 9, speaker on ports 3-4, mic on ports 13-14)
 
 - Works like the driver's port 5 button: hold it while you talk, or tap to start and tap again when you're done. Green while it listens, blue while it thinks, a red flash and a low tone if the hub can't be reached. The answer plays on the back-seat speaker only.
+- In translator mode the button only translates (see Translator).
 - **Questions only.** The back seat gets local answers ("how far is the moon?") and, when it says "Google", the Gemini agent with Search and Maps ("ask Google when the Ateneum closes"). It can never send a message to the family's Telegram bots, switch the light or put directions on the driver's phone: `voice.py` refuses those ("From the back seat I can only answer questions. Ask the driver for that."), and Gemini gets none of those functions for a back-seat request.
 - Nothing from the back seat shows on the driver's screen. The driver and the back seat can ask at the same time; each board keeps its own request.
 - Topics: `car/passenger/voice/start`, `/end` (board to hub), `/pcm`, `/stop` (hub to board), `car/passenger/status` (retained online flag). Mic audio goes to the same UDP port 1885 as the driver's; the session id tells them apart.
+
+## Translator (driver's screen menu → Translator)
+
+- For a back-seat passenger who doesn't speak English. On the driver's screen, turn the knob to **Translator** and press it: the screen shows **Translator ON**, the back seat hears "Translator on." and their button flashes cyan until they press it. Press the knob again to turn it off: the back seat hears "Translator off." It's off after the board restarts.
+- **Back seat → driver:** the passenger presses their button (port 9) and speaks their own language. Gemini (`gemini-3.8-flash`) hears the recording, names the language and its regional variety from the accent, words and grammar (Portuguese (Portugal), not just Portuguese) and translates it in one call (about 3-4 s); the driver hears it in English on their speaker, and the screen shows it under the language's name. The back-seat button chimes and goes dark when it's passed on.
+- **Driver → back seat:** the driver presses the voice button (port 5) and speaks English. Gemini translates it into the exact variety the back seat last spoke, with that country's words, grammar and spelling (Portugal: "estamos a chegar", "autocarro", "casa de banho", not the Brazilian forms), and it's spoken on the back-seat speaker by the local Piper voice of that exact variety (`pt_PT-tugão` for Portugal, `pt_BR-faber` for Brazil, `es_ES`/`es_MX`, ...; `VARIETY_VOICES` in `voice.py`), or by Gemini TTS (`gemini-3.8-flash-tts`, voice Kore) with the variety's language code when there's no local voice. If the back seat hasn't spoken yet, the car says so: it doesn't know their language.
+- The flow: the driver turns it on, and the screen shows "Waiting for the back seat to speak first". The passenger speaks; the screen then shows their language ("Back seat: Spanish", retained on `car/translator/lang`) and "Voice button: reply". The language is learned again each time the translator is turned on.
+- Pressing the knob cancels it at any point and goes back to the menu: anything still being translated or played is dropped, on both boards.
+- The driver board owns the mode: it sends it with every voice press (`"tr"` in `car/atech/voice/start`), so the hub can't mistake a reply for a voice command even if it missed the menu change.
+- While it's on, every press on either board is only translated: no voice commands, no messages to the family, no "ask Google". Turn it off for those.
+- Privacy: only in this mode does recorded speech go to Google (Gemini), from both boards. The driver turns it on.
+- Override the models in `jetson-hub/secrets.json` with `translate_model`, `tts_model` and `tts_voice`.
 
 ## SOS button (port 6)
 
@@ -65,7 +85,7 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 - Hold the button while you talk, or tap it once to start and tap again when you're done. It chimes and stays green while it listens. The button is the wake word: "hey car" is optional. Say what you want, for example:
     - "Hey car, send a message to mom, I'm running 5 min late" (also dad, or both): a Telegram text from that bot, "💬 From the driver: ...". No location is attached.
       A message goes to everyone only if you say "both", "everyone", "all", "family" or "parents" or name every contact; if the model can't tell who, the car asks "Who should I send it to?" instead of guessing, and for 30 s your next press can be just the name ("Dad", "Send it to mom", "Both"; in that answer, sound-alikes such as "that" or "dead" count as dad and "mum" or "ma" as mom). Speech recognition also gets the contact names as hints. Tip: wait for the chime before speaking, and let go half a second after you finish. Common mishearings are fixed first ("send dead" → dad, "mum" → mom).
-    - "Hey car, ask Google what's the weather for today", or "find the nearest open pharmacy and text mom I'm stopping there": a Gemini agent with Google Search, Google Maps (at the phone's last location) and the car's own functions (send a message, the light, the cabin camera's latest verdict). It chains them and the answer is read out; it says "One moment" first.
+    - "Hey car, ask Google what's the weather for today", or "find the nearest open pharmacy and text mom I'm stopping there": a Gemini agent with Google Search, Google Maps (at the phone's last location) and the car's own functions (send a message, the light, the cabin camera's latest verdict). It chains them and the answer is read out, kept to one short sentence (two if really needed); it says "One moment" first.
     - "Hey car, directions to Kamppi" (also "take me to ...", "navigate to ..."): a **Go to Kamppi** button on the SafeDrive page on the phone (see SafeDrive page). Without "Google", no AI service sees the destination: Google Maps looks it up when you tap Go. With "Google" ("ask Google for directions to the nearest open pharmacy"), Gemini finds the exact place with Maps first and puts that on the button.
     - "Hey car, turn on the light" / "turn off the light": the light grid on port 7.
     - Anything else, like a quick fact or a joke, gets a short answer from the local model.

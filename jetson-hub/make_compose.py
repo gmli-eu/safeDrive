@@ -29,15 +29,22 @@ tz = secrets.get("tz", "Europe/Helsinki")
 env = {"HUB_B64": hub_b64, "MQTT_HOST": "127.0.0.1", "LIVE_PERIOD": "900", "STATE_DIR": "/data", "TZ": tz,
        "TELEGRAM_BOTS": json.dumps(bots), "GEMINI_API_KEY": secrets.get("gemini_api_key", "")}
 if secrets.get("gemini_model"): env["GEMINI_MODEL"] = secrets["gemini_model"]
-voice_env = {"VOICE_B64": b64z(here / "voice.py"), "MQTT_HOST": "127.0.0.1", "TZ": tz,
+# voice.py is too big for one env var even compressed: split into VOICE_B64_0, _1, ... (joined at start).
+voice_b64 = b64z(here / "voice.py")
+VOICE_PART = 30000
+voice_parts = {f"VOICE_B64_{i}": voice_b64[o:o + VOICE_PART] for i, o in enumerate(range(0, len(voice_b64), VOICE_PART))}
+voice_env = {**voice_parts, "MQTT_HOST": "127.0.0.1", "TZ": tz,
              "OLLAMA_URL": "http://127.0.0.1:11434", "DATA_DIR": "/data", "HUB_STATE": "/hub/telegram.json",
              "CONTACTS": json.dumps([b["name"] for b in bots]),   # names only: Telegram stays in the hub
              "GEMINI_API_KEY": secrets.get("gemini_api_key", ""),
              "VERDA_INFERENCE_KEY": secrets.get("verda_inference_key", ""),   # Nemotron 3.5 Super VL
              "VISION_URL": "http://127.0.0.1:8091",
              "PLACES_B64": b64z(here / "places-helsinki.txt")}   # fallback place names until the area's list is fetched
-for key in ("llm_model", "whisper_model", "piper_voice", "gemini_model", "gesture_from", "voice_drive", "voice_peak"):   # optional overrides
-    if secrets.get(key): voice_env[key.upper()] = secrets[key]
+for key in ("llm_model", "whisper_model", "piper_voice", "gemini_model", "gesture_from", "voice_drive", "voice_peak",
+            "translate_model", "tts_model", "tts_voice", "whisper_multi_model", "prefetch_langs", "piper_voices"):   # optional overrides
+    if secrets.get(key):
+        v = secrets[key]
+        voice_env[key.upper()] = json.dumps(v) if isinstance(v, dict) else ",".join(v) if isinstance(v, list) else str(v)
 vision_env = {"VISION_B64": b64z(here / "vision.py"), "DATA_DIR": "/data", "TZ": tz,
               "CAMERA_URL": secrets.get("camera_url", "http://172.20.10.4:8090/stream.mjpg")}   # the Uno Q (unoq-camera/)
 dash_env = {"DASH_B64": b64z(here / "dash.py"), "MQTT_HOST": "127.0.0.1", "DASH_PORT": "8092", "TZ": tz}
@@ -69,7 +76,7 @@ compose = f"""services:
       OLLAMA_CONTEXT_LENGTH: "4096"
   voice:
     image: python:3.12-slim-bookworm
-    command: ["python", "-u", "-c", "import os, base64, zlib; exec(zlib.decompress(base64.b64decode(os.environ['VOICE_B64'])))"]
+    command: ["python", "-u", "-c", "import os, base64, zlib; exec(zlib.decompress(base64.b64decode(''.join(os.environ['VOICE_B64_%d' % i] for i in range({len(voice_parts)})))))"]
     network_mode: host
     restart: always
     depends_on: [mosquitto]   # not ollama: voice.py waits for it, and redeploying voice mustn't restart a model download

@@ -47,7 +47,7 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 
 ## Voice assistant (button on port 5, mic on ports 3-4, speaker on ports 10-11)
 
-- Hold the button while you talk, or tap it once to start and tap again when you're done. It chimes and stays green while it listens. Say what you want, for example:
+- Hold the button while you talk, or tap it once to start and tap again when you're done. It chimes and stays green while it listens. The button is the wake word: "hey car" is optional. Say what you want, for example:
     - "Hey car, send a message to mom, I'm running 5 min late" (also dad, or both): a Telegram text from that bot, "💬 From the driver: ...". No location is attached.
       A message goes to everyone only if you say "both", "everyone", "all", "family" or "parents" or name every contact; if the model can't tell who, the car asks "Who should I send it to?" instead of guessing, and for 30 s your next press can be just the name ("Dad", "Send it to mom", "Both"; in that answer, sound-alikes such as "that" or "dead" count as dad and "mum" or "ma" as mom). Speech recognition also gets the contact names as hints. Tip: wait for the chime before speaking, and let go half a second after you finish. Common mishearings are fixed first ("send dead" → dad, "mum" → mom).
     - "Hey car, ask Google what's the weather for today", or "find the nearest open pharmacy and text mom I'm stopping there": a Gemini agent with Google Search, Google Maps (at the phone's last location) and the car's own functions (send a message, the light, the cabin camera's latest verdict). It chains them and the answer is read out; it says "One moment" first.

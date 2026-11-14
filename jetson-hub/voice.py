@@ -257,7 +257,9 @@ def listen(s):
         else: say(s, "Sorry, something went wrong.", "Error", str(e)[:120], "alert")
 
 # ---------- speech to text ----------
-WAKE = re.compile(r"^\W*(?:(?:hey|hi|hello|ok|okay|a)\W+)?(?:car|cars|car's|kar|carl)\b\W*", re.I)
+# "Hey car" isn't needed (the button is the wake word): strip any leading greeting, with or without
+# "car". "Google" is never stripped: it decides whether a request goes online.
+WAKE = re.compile(r"^\W*(?:(?:hey|hi|hello|ok|okay)\b\W*)?(?:(?:a\s+)?(?:car|cars|car's|kar|carl)\b\W*)?", re.I)
 
 def transcribe(pcm):
     if whisper is None: raise RuntimeError("speech-to-text is still loading")

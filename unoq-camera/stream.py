@@ -1,10 +1,12 @@
 # Runs on the Arduino UNO Q: serves the USB camera's own MJPEG frames over HTTP, without
 # re-encoding (v4l2-ctl reads the camera, this splits the stream into JPEGs). Standard library only.
-#   GET /stream.mjpg  live multipart MJPEG (for a browser or the Jetson)
-#   GET /frame.jpg    newest frame, 503 if none in the last 2 s
-#   GET /health       JSON: fps, age of the newest frame, camera, size, dark (frames near-black)
+#   GET /stream.mjpg   live multipart MJPEG at full FPS (for the Jetson)
+#   GET /preview.mjpg  live multipart MJPEG capped at ~2.5 fps (for browsers: spares 2.4 GHz Wi-Fi)
+#   GET /frame.jpg     newest frame, 503 if none in the last 2 s
+#   GET /health        JSON: fps, age of the newest frame, camera, size, dark (frames near-black)
+#   GET /icons/*.png   hand-sign guide icons shown in the live view's menu
 # Every frame carries X-Captured-At-Unix-Ns, as Wendy's camera sharing expects.
-import glob, json, os, subprocess, threading, time
+import glob, json, os, pathlib, subprocess, threading, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 WIDTH, HEIGHT = int(os.environ.get("WIDTH", 1280)), int(os.environ.get("HEIGHT", 720))
@@ -90,8 +92,159 @@ def capture_loop():
         stats["fps"] = 0.0
         log("camera stream ended (unplugged?), restarting in 2 s"); time.sleep(2)
 
-PAGE = b"""<!doctype html><meta name=viewport content="width=device-width"><title>SafeDrive camera</title>
-<body style="margin:0;background:#000"><img src="/stream.mjpg" style="width:100%;height:100vh;object-fit:contain">"""
+ICON_DIR = pathlib.Path(__file__).resolve().parent / "icons"
+ICONS = {p.name: p.read_bytes() for p in ICON_DIR.glob("*.png")} if ICON_DIR.is_dir() else {}
+
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SafeDrive camera</title>
+<style>
+  :root { --bg:#0b0f14; --card:#151b23; --border:#232d3b; --fg:#e8edf2; --muted:#8a96a3; --accent:#2f80ed; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:#000; color:var(--fg);
+    font:15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow:hidden; }
+  body { display:flex; height:100dvh; }
+  .stage { flex:1; min-width:0; position:relative; display:flex; align-items:center; justify-content:center; background:#000; }
+  .feed { width:100%; height:100%; object-fit:contain; display:block; }
+  .menu-btn { position:absolute; top:max(14px, env(safe-area-inset-top)); right:14px; z-index:10;
+    display:inline-flex; align-items:center; gap:8px; padding:10px 15px; border-radius:999px;
+    border:1px solid rgba(255,255,255,.16); background:rgba(11,15,20,.82); color:var(--fg);
+    font:600 14px/1 inherit; cursor:pointer; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 4px 18px rgba(0,0,0,.45); transition:background .15s, border-color .15s; }
+  .menu-btn:hover { background:rgba(21,27,35,.95); border-color:rgba(255,255,255,.3); }
+  .menu-btn[aria-expanded="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .menu-btn svg { width:18px; height:18px; flex:none; }
+  .backdrop { display:none; }
+  .drawer { width:410px; max-width:92vw; height:100%; background:var(--bg); border-left:1px solid var(--border);
+    display:flex; flex-direction:column; overflow:hidden; }
+  .drawer[hidden] { display:none !important; }
+  .drawer-head { display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:16px 18px 12px; border-bottom:1px solid var(--border); }
+  .drawer-head h2 { margin:0; font-size:17px; letter-spacing:.01em; }
+  .close-btn { background:var(--card); border:1px solid var(--border); color:var(--fg); width:32px; height:32px;
+    border-radius:50%; font-size:18px; line-height:1; cursor:pointer; display:grid; place-items:center; }
+  .close-btn:hover { border-color:var(--muted); }
+  .drawer-body { flex:1; overflow-y:auto; padding:14px 16px 22px; display:flex; flex-direction:column; gap:10px; }
+  .tip { margin:0 0 2px; padding:10px 12px; border-radius:12px; background:rgba(47,128,237,.12);
+    border:1px solid rgba(47,128,237,.28); color:var(--fg); font-size:13px; line-height:1.45; }
+  .sign { display:flex; gap:13px; align-items:center; background:var(--card); border:1px solid var(--border);
+    border-radius:16px; padding:11px 13px; cursor:pointer; transition:border-color .15s; text-align:left; color:inherit; font:inherit; width:100%; }
+  .sign:hover, .sign.zoom { border-color:var(--accent); }
+  .sign img { width:78px; height:78px; border-radius:12px; flex:none; object-fit:cover; background:#151b23;
+    border:1px solid rgba(255,255,255,.06); transition:width .18s, height .18s; }
+  .sign.zoom { flex-direction:column; align-items:flex-start; }
+  .sign.zoom img { width:168px; height:168px; align-self:center; }
+  .sign-info { min-width:0; flex:1; }
+  .sign-name { font-weight:700; font-size:15px; margin-bottom:3px; display:flex; align-items:center; gap:6px; }
+  .sign-how { color:var(--fg); font-size:13.5px; opacity:.92; }
+  .sign-says { color:var(--muted); font-size:12.5px; margin-top:4px; font-style:italic; }
+  .note { color:var(--muted); font-size:12.5px; line-height:1.45; margin:4px 2px 0; }
+  @media (max-width: 780px) {
+    .drawer { position:fixed; inset:0 0 0 auto; z-index:30; box-shadow:-12px 0 34px rgba(0,0,0,.7); }
+    .backdrop.open { display:block; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:20; }
+  }
+</style></head>
+<body>
+  <div class="stage">
+    <img class="feed" id="feed" src="/preview.mjpg" alt="SafeDrive live camera">
+    <button class="menu-btn" id="menuBtn" type="button" aria-expanded="false" aria-controls="drawer">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M18 11V6a2 2 0 0 0-4 0v4"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/>
+        <path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
+      </svg>
+      <span>Hand signs</span>
+    </button>
+  </div>
+  <div class="backdrop" id="backdrop"></div>
+  <aside class="drawer" id="drawer" hidden>
+    <div class="drawer-head">
+      <h2>Nemotron hand signs</h2>
+      <button class="close-btn" id="closeBtn" type="button" aria-label="Close menu">&times;</button>
+    </div>
+    <div class="drawer-body">
+      <p class="tip">Face the camera and <b>hold the sign steady</b> until the car speaks (~2–3 s normally; 1 check is enough when the shared Nemotron cloud is busy). Tap any card to enlarge.</p>
+      <button class="sign" type="button">
+        <img src="/icons/all_good.png" alt="Thumbs up">
+        <div class="sign-info">
+          <div class="sign-name">All good</div>
+          <div class="sign-how">One hand, thumbs up, held steady.</div>
+          <div class="sign-says">“All good back here.”</div>
+        </div>
+      </button>
+      <button class="sign" type="button">
+        <img src="/icons/need_break.png" alt="Two hands forming a T">
+        <div class="sign-info">
+          <div class="sign-name">Need a break</div>
+          <div class="sign-how">Both hands make a T (time-out): one flat hand horizontal, the other upright touching it.</div>
+          <div class="sign-says">“Can we stop for a break soon?”</div>
+        </div>
+      </button>
+      <button class="sign" type="button">
+        <img src="/icons/volume_down.png" alt="Flat hand palm down pushing downward">
+        <div class="sign-info">
+          <div class="sign-name">Volume down</div>
+          <div class="sign-how">One flat hand, palm facing down, push downward.</div>
+          <div class="sign-says">“Could you turn the volume down, please?”</div>
+        </div>
+      </button>
+      <button class="sign" type="button">
+        <img src="/icons/volume_up.png" alt="Flat hand palm up lifting upward">
+        <div class="sign-info">
+          <div class="sign-name">Volume up</div>
+          <div class="sign-how">One flat hand, palm facing up, lift upward.</div>
+          <div class="sign-says">“Could you turn the volume up, please?”</div>
+        </div>
+      </button>
+      <button class="sign" type="button">
+        <img src="/icons/slower.png" alt="Open palm facing camera like a stop sign">
+        <div class="sign-info">
+          <div class="sign-name">Slower</div>
+          <div class="sign-how">One flat hand, palm toward the camera, fingers up, held still like a stop sign.</div>
+          <div class="sign-says">“Could you slow down, please?”</div>
+        </div>
+      </button>
+      <button class="sign" type="button">
+        <img src="/icons/faster.png" alt="Finger or hand circling forward">
+        <div class="sign-info">
+          <div class="sign-name">Faster</div>
+          <div class="sign-how">Raise one index finger and circle it (or hold it pointing up).</div>
+          <div class="sign-says">“Could you go a bit faster?”</div>
+        </div>
+      </button>
+      <button class="sign" type="button">
+        <img src="/icons/thank_you.png" alt="Flat hand from chin moving forward and down">
+        <div class="sign-info">
+          <div class="sign-name">Thank you</div>
+          <div class="sign-how">Flat hand at your chin moving forward &amp; down (or press both palms together).</div>
+          <div class="sign-says">“Thank you!”</div>
+        </div>
+      </button>
+      <p class="note">Slow, held signs work best — fast movement blurs on camera. Waving, talking with your hands, touching hair/glasses, or resting your chin on a curled hand are ignored.</p>
+    </div>
+  </aside>
+<script>
+  var btn = document.getElementById("menuBtn"), drawer = document.getElementById("drawer"),
+      backdrop = document.getElementById("backdrop");
+  function setOpen(open) {
+    drawer.hidden = !open;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    backdrop.className = open ? "backdrop open" : "backdrop";
+    try { localStorage.setItem("sd_signs_open", open ? "1" : "0"); } catch (e) {}
+  }
+  btn.onclick = function () { setOpen(drawer.hidden); };
+  document.getElementById("closeBtn").onclick = backdrop.onclick = function () { setOpen(false); };
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !drawer.hidden) setOpen(false); });
+  document.querySelectorAll(".sign").forEach(function (el) {
+    el.onclick = function () { el.classList.toggle("zoom"); };
+  });
+  document.addEventListener("visibilitychange", function () {
+    document.getElementById("feed").src = document.hidden ? "" : "/preview.mjpg";
+  });
+  try { if (localStorage.getItem("sd_signs_open") === "1") setOpen(true); } catch (e) {}
+</script>
+</body></html>
+""".encode()
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -107,7 +260,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(503, "no recent frame")
             self.send_response(200); self.frame_headers(jpg, ns)
             self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(jpg)
-        elif path == "/stream.mjpg":
+        elif path in ("/stream.mjpg", "/preview.mjpg"):
+            preview = path == "/preview.mjpg"
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-store"); self.end_headers()
@@ -121,6 +275,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
                                      b"Content-Length: %d\r\nX-Captured-At-Unix-Ns: %d\r\n\r\n" % (len(jpg), ns)
                                      + jpg + b"\r\n")
+                    self.wfile.flush()
+                    if preview: time.sleep(0.4)   # ~2.5 fps for browsers: spares 2.4 GHz Wi-Fi for speaker audio
             except (BrokenPipeError, ConnectionResetError):
                 pass
         elif path == "/health":
@@ -129,8 +285,14 @@ class Handler(BaseHTTPRequestHandler):
                                "last_frame_age_s": round((time.time_ns() - ns) / 1e9, 2) if ns else None}).encode()
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        elif path.startswith("/icons/") and path[7:] in ICONS:
+            img = ICONS[path[7:]]
+            self.send_response(200); self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(len(img))); self.end_headers(); self.wfile.write(img)
         elif path == "/":
-            self.send_response(200); self.send_header("Content-Type", "text/html")
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(PAGE))); self.end_headers(); self.wfile.write(PAGE)
         else:
             self.send_error(404)

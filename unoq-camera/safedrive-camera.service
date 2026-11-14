@@ -6,7 +6,9 @@ After=network.target
 User=arduino
 Group=video
 ExecStart=/usr/bin/python3 -u /home/arduino/safedrive-camera/stream.py
-Environment=WIDTH=1280 HEIGHT=720 FPS=15 PORT=8090
+# 800x600 at 10 fps (~0.45 MB/s): 1280x720 at 15 fps (~1.3 MB/s) took so much of the 2.4 GHz hotspot
+# that the board's speech audio stuttered. Nemotron only uses 640 px frames, ~3 per second.
+Environment=WIDTH=800 HEIGHT=600 FPS=10 PORT=8090
 Restart=always
 RestartSec=2
 

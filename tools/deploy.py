@@ -19,6 +19,7 @@ FAIL = (" failed", "rror:", "Traceback", "No Atech board")
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 folder = args[0].strip("/").split("/")[-1]
 if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, runs as a systemd service
+    import io, tarfile
     root = pathlib.Path(__file__).resolve().parent.parent / folder
     secrets = json.loads((root / "secrets.json").read_text())
     host = os.environ.get("UNOQ_HOST", secrets["host"])
@@ -26,8 +27,12 @@ if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, r
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", *(["-i", str(key)] if key.exists() else []),
            f"{secrets.get('ssh_user', 'arduino')}@{host}"]
     unit = (root / "safedrive-camera.service").read_text()
-    subprocess.run(ssh + ["mkdir -p ~/safedrive-camera && cat > ~/safedrive-camera/stream.py"],
-                   input=(root / "stream.py").read_bytes(), check=True)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(root / "stream.py", arcname="stream.py")
+        if (root / "icons").is_dir(): tar.add(root / "icons", arcname="icons")
+    subprocess.run(ssh + ["rm -rf ~/safedrive-camera/icons && mkdir -p ~/safedrive-camera && tar -xzf - -C ~/safedrive-camera"],
+                   input=buf.getvalue(), check=True)
     # sudo reads the password from the first line of stdin; the rest is the unit file.
     r = subprocess.run(ssh + ["sudo -S -p '' sh -c 'cat > /etc/systemd/system/safedrive-camera.service && "
                               "systemctl daemon-reload && systemctl enable -q safedrive-camera && "

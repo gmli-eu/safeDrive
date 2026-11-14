@@ -29,7 +29,7 @@ os.environ.setdefault("HF_HOME", "/data/hf")
 # connections, tries IPv6 first, and the hotspot's broken IPv6 left the Whisper download hanging.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-import json, pathlib, queue, re, socket, threading, time, urllib.error, urllib.request, uuid
+import collections, json, pathlib, queue, re, socket, threading, time, urllib.error, urllib.request, uuid
 import numpy as np
 import paho.mqtt.client as mqtt
 
@@ -58,7 +58,10 @@ HUB_STATE = pathlib.Path(os.environ.get("HUB_STATE", "/hub/telegram.json"))   # 
 DATA = pathlib.Path(os.environ.get("DATA_DIR", "/data"))
 
 SR = 16000                 # board mic and speaker sample rate
-PLAY_LEAD_S = 0.6          # how far ahead of the speaker the PCM is sent (board buffers 1.5 s)
+# How far ahead of the speaker the PCM is sent. The board buffers 1.5 s and drops what doesn't fit;
+# 0.6 s left gaps whenever the hotspot stalled (it also carries the camera's ~1.3 MB/s). 1.0 s rides
+# out longer stalls and still leaves room for a burst of late packets. Speech starts just as soon.
+PLAY_LEAD_S = 1.0
 PCM_CHUNK = 3200           # bytes per MQTT message: 100 ms
 MIC_PORT = 1885            # the board sends mic audio here over UDP (see udp_loop)
 
@@ -710,6 +713,23 @@ def ask_google(s, query):
     say(s, answer, "Google", answer, "fg")
 
 # ---------- text to speech, streamed to the board's speaker ----------
+# Louder speech without touching the board's volume (0.6 in the firmware: 1.0 clips). Each
+# sentence is softly compressed (tanh), so quiet syllables get louder, and its peaks are set to
+# VOICE_PEAK of full scale. Full scale broke up on the speaker: at volume 0.6 the amplifier
+# distorts near the top, so the peaks stay at 0.75. VOICE_DRIVE 0 turns it off.
+VOICE_DRIVE = float(os.environ.get("VOICE_DRIVE", "2.0"))
+VOICE_PEAK = float(os.environ.get("VOICE_PEAK", "0.75"))
+VOICE_MAX_GAIN = 4.0              # never amplify a near-silent sentence more than this
+
+def louder(pcm16):
+    if VOICE_DRIVE <= 0 or not len(pcm16): return pcm16
+    a = pcm16.astype(np.float32) / 32768
+    peak = float(np.abs(a).max())
+    if peak < 1e-3: return pcm16
+    a *= min(1.0 / peak, VOICE_MAX_GAIN)
+    a = np.tanh(VOICE_DRIVE * a) / np.tanh(VOICE_DRIVE)        # peaks at 1.0, quiet parts up to ~2x
+    return (a * VOICE_PEAK * 32767).astype(np.int16)
+
 def say(s, text, title, body, color):
     if not current(s): return
     log("saying:", text)
@@ -721,7 +741,8 @@ def say(s, text, title, body, color):
         try:
             for chunk in piper.synthesize(text):
                 if not current(s): break
-                q.put(soxr.resample(chunk.audio_int16_array, chunk.sample_rate, SR).astype("<i2").tobytes())
+                pcm = soxr.resample(chunk.audio_int16_array, chunk.sample_rate, SR)
+                q.put(louder(np.asarray(pcm, dtype=np.int16)).astype("<i2").tobytes())
         except Exception as e: log("text-to-speech failed:", e)
         finally: q.put(None)
     threading.Thread(target=synth, daemon=True).start()
@@ -744,32 +765,47 @@ def say(s, text, title, body, color):
 # hub on car/vision/threat, which alerts the contacts silently like SOS (no sound or screen in the
 # car: an attacker mustn't learn that help was called). Every verdict is also published, retained,
 # on car/vision/nemotron, so the demo can show what Nemotron sees.
-WATCH_PROMPT = """You are the safety monitor of a car. The images are frames from a camera inside the car (their order is given below).
-Answer two separate questions.
+# Who may give hand signs: "any" (anyone the camera sees, the driver too: at a demo table everyone
+# looks like they sit in front) or "back" (only the back seat, for a camera mounted in a real car).
+# With "back", Nemotron ignored nearly every sign at the demo table: it saw the person as the driver.
+GESTURE_FROM = os.environ.get("GESTURE_FROM", "any")
+SIGN_WHO = ("anyone visible (the driver too)" if GESTURE_FROM == "any" else
+            "someone in the BACK seat (ignore the driver and the front passenger)")
+WATCH_PROMPT = f"""You are the safety monitor of a car. The images are frames from a camera inside the car (their order is given below).
+Answer these questions.
 
 1. "level": is anyone near the driver attacking the driver or taking control of the car?
 "danger" = clearly happening now: a weapon (knife, gun, bottle raised to strike); hitting, choking or physically restraining the driver; grabbing the steering wheel, gear lever or handbrake. This silently alerts the driver's family, so use it only for these.
 "watch" = risky but not an attack: something blocking the driver's view or covering their eyes or face, objects thrown, a scuffle starting, a hand moving toward the wheel.
-"none" = everything else: talking, eating, phones, normal gestures, sleeping, empty seats, a blurry or dark frame.
+"none" = everything else: talking, eating, phones, normal gestures, hand signs, sleeping, empty seats, a blurry or dark frame.
 "what" = one short factual sentence of what you see (empty if none).
 
-2. "instruction": is someone in the BACK seat making one of these hand signs to the driver? Ignore the driver and the front passenger.
-- volume_down: flat hand, palm down, pressed downward
-- volume_up: flat hand, palm up, lifted upward
-- slower: flat hand, palm facing the front seats, held still like a stop sign
-- faster: hand rolling forward in small circles
-- thank_you: fingertips of a flat hand touching the chin, or moving forward and down from it
-- need_break: both hands forming a T (time-out)
-- all_good: thumbs up
-Use "none" unless the sign is clear.
+2. "hands": one short sentence on what any raised or moving hands do across ALL frames (not only the last frame): one or both hands, shape (flat, fist, thumb up, single index finger raised, two hands in a perpendicular T/cross, or two palms pressed vertically together), which way the palm faces (down, up, inward, toward the camera), whether near the chin/mouth, and how they move from the first frame to the last. "none" only if no hand is raised in any frame.
 
-Answer with JSON only: {"level": "none"|"watch"|"danger", "what": "...", "people": <number of people visible>, "instruction": "<one id above or none>"}"""
+3. "instruction": based on "hands", is {SIGN_WHO} deliberately making one of these hand signs across the frames? People may sit close to the camera and their hands may be partly cut off.
+Check in this order:
+a) Are BOTH hands raised together?
+   - If one hand is horizontal and the other upright/vertical touching it (sports time-out T), or the two hands/forearms are crossed in an X, answer need_break.
+   - If both flat hands are pressed vertically palm-to-palm with fingers pointing up (prayer / thank-you pose), answer thank_you.
+   - volume_down, volume_up, slower, faster and all_good are never two hands.
+b) Otherwise, if ONE hand makes one of the signs below (even if the motion finishes and the hand lowers by the last frame), answer that sign:
+- thank_you: ONE flat hand with fingers together touching or held close to the chin, mouth or lips (palm facing inward/person) in any frame, or moving forward and downward away from the chin/mouth. This counts even though the hand is near the face.
+- faster: ONE hand with ONLY the index finger pointing up (other fingers curled), whether circling, moving slightly, or held up steady (a small finger circle looks nearly still across 3 snapshots), OR a hand rolling in circles.
+- all_good: ONE hand giving a thumbs up (thumb pointing up, other fingers curled).
+- slower: ONE flat hand (the other hand down), palm facing the camera, all fingers pointing up, held still like a stop sign.
+- volume_down: ONE flat hand (the other hand down), palm facing straight down, held horizontal or pushing downward (not touching/leaving the chin).
+- volume_up: ONE flat hand (the other hand down), palm facing straight up, held horizontal or lifting upward.
+- need_break: BOTH hands together making a T or a cross (sports time-out), see a) above.
+Use "none" for ordinary movement: waving side-to-side, talking casually with the hands, adjusting hair, glasses or headphones, scratching the nose, a curled fist resting under the chin (thinking pose), or holding a phone or cup.
+
+Answer with JSON only: {{"level": "none"|"watch"|"danger", "what": "...", "people": <number of people visible>, "hands": "...", "instruction": "<one id above or none>"}}"""
 GESTURES = {"volume_down": "Could you turn the volume down, please?", "volume_up": "Could you turn the volume up, please?",
             "slower": "Could you slow down, please?", "faster": "Could you go a bit faster?", "thank_you": "Thank you!",
             "need_break": "Can we stop for a break soon?", "all_good": "All good back here."}
+# "hands" comes before "instruction": Nemotron describes the hands first, then picks the sign from that description.
 WATCH_SCHEMA = {"type": "object", "properties": {"level": {"type": "string", "enum": ["none", "watch", "danger"]},
-                "what": {"type": "string"}, "people": {"type": "integer"},
-                "instruction": {"type": "string", "enum": ["none", *GESTURES]}}, "required": ["level", "what", "people", "instruction"]}
+                "what": {"type": "string"}, "people": {"type": "integer"}, "hands": {"type": "string"},
+                "instruction": {"type": "string", "enum": ["none", *GESTURES]}}, "required": ["level", "what", "people", "hands", "instruction"]}
 MAX_FRAME_AGE_S = 10
 HUB_LEVEL = {"none": "low", "watch": "medium", "danger": "high"}   # hub.py alerts on "high" only
 
@@ -837,7 +873,7 @@ def watch_loop():
     import base64
     if not VERDA_KEY:
         log("Nemotron off: no VERDA_INFERENCE_KEY"); return
-    prev_gesture, spoken_gesture = "none", None
+    recent_gestures, spoken_gesture = collections.deque(maxlen=3), None
     while True:
         try:
             try: frames, captured = camera_frames()
@@ -847,8 +883,9 @@ def watch_loop():
             if covered(frames[-1]): camera_state("dark"); time.sleep(2); continue   # no point asking about a black frame
             camera_state("ok")
             t = time.time()
-            intro = (f"{len(frames)} frames from the last {WATCH_SPAN_S} s, oldest first, newest last. Judge what is happening now"
-                     " (the newest frame), using the earlier ones to see movement." if len(frames) > 1 else "One frame.")
+            intro = (f"{len(frames)} frames from the last {WATCH_SPAN_S} s, oldest first, newest last. Judge danger on the newest frame,"
+                     " and count a hand sign if it is clearly made across the frames (moving signs like thank_you, volume_down, volume_up"
+                     " or faster may start in an earlier frame and move down by the last)." if len(frames) > 1 else "One frame.")
             text = nemotron([{"type": "text", "text": WATCH_PROMPT + "\n\n" + intro},
                              *({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(f).decode()}} for f in frames)],
                             schema=WATCH_SCHEMA)
@@ -857,18 +894,21 @@ def watch_loop():
             level = v.get("level") if v.get("level") in ("none", "watch", "danger") else "none"
             took = time.time() - t
             gesture = v.get("instruction") if v.get("instruction") in GESTURES else "none"
-            log(f"Nemotron ({took:.0f}s, frame {t - captured:.1f}s old): {level} {v.get('what', '')!r} people={v.get('people')} sign={gesture}")
+            log(f"Nemotron ({took:.0f}s, frame {t - captured:.1f}s old): {level} {v.get('what', '')!r} people={v.get('people')} sign={gesture} hands={str(v.get('hands', ''))[:120]!r}")
             verdict = {"level": HUB_LEVEL[level], "what": str(v.get("what", ""))[:200], "people": v.get("people"),
                        "instruction": gesture, "captured_at": captured, "took_s": round(took, 1), "model": NEMOTRON_MODEL}
             client.publish("car/vision/nemotron", json.dumps(verdict), qos=0, retain=True)
             last_verdict.clear(); last_verdict.update(verdict)
             if level == "danger":
                 client.publish("car/vision/threat", json.dumps(verdict), qos=1)   # hub alerts silently
-            # Back-seat sign: spoken after two identical replies in a row, then not again until it changes.
-            if gesture != "none" and gesture == prev_gesture and gesture != spoken_gesture:
-                if speak_aside("From the back seat: " + GESTURES[gesture], "Back seat"): spoken_gesture = gesture
-            if gesture == "none": spoken_gesture = None
-            prev_gesture = gesture
+            # Hand sign: spoken once it's in 2 of the last 3 replies when the endpoint is fast, or
+            # on a single reply when Nemotron took >= 5 s (so a busy shared endpoint doesn't make
+            # someone hold a sign for a full minute).
+            recent_gestures.append(gesture)
+            slow = took >= 5.0
+            if gesture != "none" and recent_gestures.count(gesture) >= (1 if slow else 2) and gesture != spoken_gesture:
+                if speak_aside(("From the back seat: " if GESTURE_FROM == "back" else "Hand sign: ") + GESTURES[gesture], "Hand sign"): spoken_gesture = gesture
+            if (gesture != spoken_gesture if slow else spoken_gesture not in recent_gestures): spoken_gesture = None
         except Exception as e:
             log("Nemotron watch error, retrying in 15 s:", repr(e)); time.sleep(15)
 

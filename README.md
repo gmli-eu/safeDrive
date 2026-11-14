@@ -63,13 +63,32 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 - The first start downloads about 8 GB (Ollama image, Gemma, Whisper and Python packages) into the app's volumes. `voice.py` downloads the LLM itself, into Ollama's store, over IPv4: Ollama's own pull uses IPv6, which the phone hotspot keeps resetting. Later starts don't download anything.
 - An accident countdown stops listening, silences the speaker and drops the half-finished request.
 - Override the models with `llm_model`, `whisper_model`, `piper_voice` or `gemini_model` in `jetson-hub/secrets.json`.
+- Spoken answers are made louder in software: each sentence is softly compressed and its peaks set to 75 % of full scale, because the board's speaker volume can't go above 0.6 without clipping, and full-scale speech broke up. In `jetson-hub/secrets.json`, `voice_peak` sets the peak level (default 0.75; lower it if the sound breaks up) and `voice_drive` the compression (default 2.0, 0 = off, 3 = louder but harsher).
 
 ## Cabin watch (NVIDIA Nemotron 3.5 Super VL)
 
 - `voice.py` sends Nemotron 3.5 Super VL (Verda endpoint, `VERDA_INFERENCE_KEY` in `.env` or `verda_inference_key` in `jetson-hub/secrets.json`) a burst of 3 camera frames from the last 1.5 s, downscaled to 640 px, one request at a time, as fast as the endpoint answers (a few seconds when it isn't busy).
-- It judges two things. **Danger to the driver**: only a weapon, hitting or restraining the driver, or grabbing the wheel, gear lever or handbrake counts as danger. That goes to `hub.py` (`car/vision/threat`), which alerts every linked chat silently like SOS, with photo and clip; nothing shows or sounds in the car. A blocked view or covered eyes is only logged. **Back-seat hand signs** (volume down/up, slower, faster, thank you, need a break, all good): spoken to the driver ("From the back seat: ...") after two identical answers in a row, never acted on.
+- It judges two things. **Danger to the driver**: only a weapon, hitting or restraining the driver, or grabbing the wheel, gear lever or handbrake counts as danger. That goes to `hub.py` (`car/vision/threat`), which alerts every linked chat silently like SOS, with photo and clip; nothing shows or sounds in the car. A blocked view or covered eyes is only logged. **Hand signs** (see below): spoken to the driver once Nemotron reports the same sign in 2 of its last 3 answers, never acted on.
 - Every verdict is published, retained, on `car/vision/nemotron`; the Gemini agent can read the latest one ("is everything OK in the back?").
 - If the camera can't see (the picture is almost uniformly black: lid closed, lens blocked, or a dark cabin at night, since the camera has no infrared) or sends nothing, Nemotron isn't asked, and the board's screen shows a crossed-out camera icon in the top-right corner until the picture is back (`car/vision/camera`, retained: `ok`, `dark` or `off`).
+
+### Hand signs to try
+
+Make the sign toward the camera and hold it still for 2-3 seconds: the car speaks it once Nemotron reports it in 2 of its last 3 answers (about one a second), and not again until it's gone from the last 3.
+
+| Sign | How to make it | The car says |
+|---|---|---|
+| 👍 All good | Thumbs up | "Hand sign: All good back here." |
+| ⏸️ Need a break | Both hands make a T (time-out) in front of you: one flat hand horizontal, the other upright and touching it | "Hand sign: Can we stop for a break soon?" |
+| 🔉 Volume down | Flat hand, palm down, push downward | "Hand sign: Could you turn the volume down, please?" |
+| 🔊 Volume up | Flat hand, palm up, lift upward | "Hand sign: Could you turn the volume up, please?" |
+| ✋ Slower | Flat hand, palm toward the camera, fingers up, held still like a stop sign | "Hand sign: Could you slow down, please?" |
+| 🔄 Faster | Roll your hand forward in circles, or circle a finger | "Hand sign: Could you go a bit faster?" |
+| 🙏 Thank you | Flat hand, fingers together, fingertips at your chin, then move it forward and down | "Hand sign: Thank you!" |
+
+- Waving, talking with your hands, touching your hair, glasses, ears or nose and resting your chin on a curled hand don't count. Slow, held signs work best: fast movement blurs on the camera.
+- Anyone the camera sees can sign, the driver included (`gesture_from: "any"`, the default, for demos at a table). In a real car, set `"gesture_from": "back"` in `jetson-hub/secrets.json`: then only people in the back seat count, and the car says "From the back seat: ..." instead of "Hand sign: ...".
+- The car stays quiet while you're talking to it. The hub log shows what Nemotron saw for each verdict, including a `hands=` description of the hands.
 
 ## SafeDrive page (phone in the holder)
 

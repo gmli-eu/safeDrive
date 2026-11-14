@@ -47,3 +47,12 @@ The port 3 button toggles the light grid.
 - **I'm ok** opens: Send to mom, Send to dad, Send to both, Go back.
 - Picking a recipient sends "I'm ok and I've arrived." plus the phone's location right away, using the last location from up to 30 minutes ago. If it's over 1 minute old, the hub also asks the phone for a new one and sends a second pin if the phone answers from more than 100 m away to that bot (`mom` and `dad` in `jetson-hub/secrets.json`). The screen then shows **Sent** (green), **Sent** without location (orange, no recent GPS fix) or **Failed** with the reason (red), and goes back to the menu. You can press the knob to close it sooner.
 - **Go back** returns to the main menu.
+
+## Accident detection (orientation sensor on port 9)
+
+- **Crash**: a jolt of more than 2.5 g in total (`CRASH_G` in `atech-flasher/project.yaml`). The sensor tops out at 2 g per axis, so only a hard knock gets there.
+- **Flip**: the board turns more than 60° away from how it sat at power-on (`FLIP_DEG`) and stays like that, still, for 2 s. Power the board on while it sits in its mounted position: that's the "upright" it compares against.
+- Either one shows **POS ACCIDENT DETECTED / ARE YOU OK?** with a 10 s countdown, and the knob ring turns red. Press the knob for **I'm ok** to cancel.
+- If nobody presses, every linked chat gets "possible accident detected" with the live location, plus: call the driver, and if they don't answer, call emergency services (`EMERGENCY_NUMBER`, default `112`). The location works the same as for the SOS button. The screen shows **Alert sent**, **Failed** with the reason, or **No reply**.
+- If the hub can't be reached when the countdown ends, the alert waits and goes out as soon as it can. Until then, a knob press still cancels it.
+- Nothing calls emergency services automatically. The message asks the people in the chats to do it.

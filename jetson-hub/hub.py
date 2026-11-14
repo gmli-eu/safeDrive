@@ -2,6 +2,8 @@
 # - hold the Atech port-6 button for 2 s -> Telegram message + live location that follows
 #   the phone (OwnTracks) for LIVE_PERIOD s.
 # - "I'm ok" in the screen menu -> "I'm ok and I've arrived." + location to mom, dad or both.
+# - crash or flip detected by the board's orientation sensor, and the driver doesn't answer
+#   "ARE YOU OK?" within 10 s -> accident alert + live location to everyone.
 import json, math, os, pathlib, socket, threading, time, urllib.parse, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 import paho.mqtt.client as mqtt
@@ -22,6 +24,7 @@ FRESH_FIX_AGE = int(os.environ.get("FRESH_FIX_AGE", "60"))   # older than this: 
 FIX_WAIT = float(os.environ.get("FIX_WAIT", "30"))           # check-in: how long a late answer from the phone still counts
 MOVED_M = float(os.environ.get("MOVED_M", "100"))            # check-in: send the late answer only if it's this far off
 SOS_FIX_WAIT = float(os.environ.get("SOS_FIX_WAIT", "60"))   # SOS with no location at all: keep waiting this long
+EMERGENCY_NUMBER = os.environ.get("EMERGENCY_NUMBER", "112")  # named in the accident alert
 # A Telegram live location that's still being shared stays valid this long without an update
 # (Telegram only sends a new position when the phone moves).
 LIVE_SHARE_MAX_AGE = int(os.environ.get("LIVE_SHARE_MAX_AGE", str(6 * 3600)))
@@ -113,18 +116,18 @@ def publish(topic, payload, retain=False):
 
 def set_mode(mode): publish("car/hub/state", {"mode": mode}, retain=True)
 
-# ---------- scenario 2: SOS long press ----------
-def send_sos():
-    # Goes out at once with the last fix; the phone is asked for a new one at the same time.
-    # When it answers, the live location moves to it (update_live). With no fix at all, the
-    # live location follows as soon as the phone answers (up to SOS_FIX_WAIT s).
+# ---------- scenarios 2 and 4: SOS long press, accident ----------
+def send_alert(label, head, tail, reply_topic):
+    # Text + live location to every linked chat. Goes out at once with the last fix; the phone
+    # is asked for a new one at the same time. When it answers, the live location moves to it
+    # (update_live). With no fix at all, the live location follows as soon as the phone
+    # answers (up to SOS_FIX_WAIT s). The result goes to reply_topic.
     global live
     try:
         targets = recipients()
         if not targets: raise RuntimeError("no Telegram chats linked yet: send any message to the bots")
         f = recent_fix()
         asked = (not f or fix_age(f) > FRESH_FIX_AGE) and ask_phone()
-        head = "🚨 SafeDrive alert: the driver held the emergency button.\n"
         if f:
             maps = f"https://maps.google.com/?q={f['lat']:.6f},{f['lon']:.6f}"
             when = f"Last known position, {fix_age(f) / 60:.0f} min ago. " if fix_age(f) > FRESH_FIX_AGE else ""
@@ -133,31 +136,32 @@ def send_sos():
             text = head + "📍 Getting the location from the phone..."
         else:
             text = head + "⚠️ No recent location from the phone (is its live location shared with a SafeDrive bot?)."
+        text += tail
         msgs, errors = [], []
         t0 = time.time()
         def send_live(token, chat, f):
             m = tg(token, "sendLocation", chat_id=chat, latitude=f["lat"], longitude=f["lon"],
                    live_period=LIVE_PERIOD, horizontal_accuracy=min(f.get("acc") or 0, 1500) or None)
             with lock: msgs.append((token, chat, m["message_id"]))
-            log(f"SOS location to {chat} after {time.time() - t0:.1f}s")
+            log(f"{label} location to {chat} after {time.time() - t0:.1f}s")
         def send_one(target):
             token, chat = target
             try:
                 tg(token, "sendMessage", chat_id=chat, text=text)
-                log(f"SOS text to {chat} after {time.time() - t0:.1f}s")
+                log(f"{label} text to {chat} after {time.time() - t0:.1f}s")
                 if f: send_live(token, chat, f)
             except Exception as e:
                 with lock: errors.append(str(e))
         # Every recipient at once, so the last chat doesn't wait for all the others.
         with ThreadPoolExecutor(max_workers=len(targets)) as pool:
             list(pool.map(send_one, targets))
-        log(f"SOS sent to {len(targets) - len(errors)}/{len(targets)} chats in {time.time() - t0:.1f}s", errors or "")
+        log(f"{label} sent to {len(targets) - len(errors)}/{len(targets)} chats in {time.time() - t0:.1f}s", errors or "")
         if len(errors) == len(targets): raise RuntimeError("; ".join(errors))
         if not f and asked and (f := wait_for_fix(SOS_FIX_WAIT)):
             def follow_up(target):
                 token, chat = target
                 try: send_live(token, chat, f)
-                except Exception as e: log("SOS location follow-up failed:", e)
+                except Exception as e: log(f"{label} location follow-up failed:", e)
             with ThreadPoolExecutor(max_workers=len(targets)) as pool:
                 list(pool.map(follow_up, targets))
         if msgs:
@@ -166,12 +170,24 @@ def send_sos():
                 moved = fix and fix["tst"] != f["tst"]
             if moved: threading.Thread(target=update_live, daemon=True).start()   # a fix that came in meanwhile
         if not msgs: raise RuntimeError("alert sent without location (no recent phone fix)")
-        publish("car/atech/notify", {"status": "sent"})
+        publish(reply_topic, {"status": "sent"})
         set_mode("idle")
     except Exception as e:
-        log("SOS failed:", e)
-        publish("car/atech/notify", {"status": "error", "reason": str(e)})
+        log(f"{label} failed:", e)
+        publish(reply_topic, {"status": "error", "reason": str(e)[:80].replace('"', "'")})
         set_mode("error")
+
+def send_sos():
+    send_alert("SOS", "🚨 SafeDrive alert: the driver held the emergency button.\n", "", "car/atech/notify")
+
+ACCIDENT_KIND = {"crash": "a hard impact", "flip": "the car seems to have flipped or rolled over"}
+
+def send_accident(kind):
+    head = (f"🚨 SafeDrive: possible accident detected ({ACCIDENT_KIND.get(kind, 'unknown cause')}). "
+            "The driver didn't answer \"ARE YOU OK?\" on the car's screen within 10 s.\n")
+    tail = (f"\n\n👉 Call the driver now. If they don't answer, call emergency services "
+            f"({EMERGENCY_NUMBER}) and give them this location.")
+    send_alert("accident", head, tail, "car/atech/accident/result")
 
 # ---------- scenario 3: "I'm ok" check-in from the screen menu ----------
 CHECKIN_TO = {"mom": {"mom"}, "dad": {"dad"}, "both": {"mom", "dad"}}
@@ -267,6 +283,9 @@ def on_message(c, userdata, m):
     if m.topic == "car/atech/button" and isinstance(data, dict) and data.get("action") == "long_press" and data.get("id") == "sos":
         set_mode("alerting")
         threading.Thread(target=send_sos, daemon=True).start()
+    elif m.topic == "car/atech/accident" and isinstance(data, dict):
+        set_mode("alerting")
+        threading.Thread(target=send_accident, args=(data.get("kind"),), daemon=True).start()
     elif m.topic == "car/atech/checkin" and isinstance(data, dict):
         threading.Thread(target=send_checkin, args=(data.get("to"),), daemon=True).start()
 

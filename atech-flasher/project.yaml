@@ -7,6 +7,7 @@ modules:
   - {id: button,         instance: lightbtn, port: 3}           # tap: toggle the light grid
   - {id: button,         instance: sosbtn,   port: 6}           # hold 2 s: Telegram live location
   - {id: neopixel,       instance: grid,     port: 7}
+  - {id: icm40608,       instance: imu,      port: 9}           # orientation sensor: crash / flip detection
   - {id: rotary_encoder, instance: knob,     ports: [13, 14]}   # turn: move in the menu, press: select
 code:
   globals: |
@@ -44,7 +45,7 @@ code:
     // ---------- Check-in menu: screen on ports 1-2, knob on ports 13-14 ----------
     // Main menu: "I'm ok". Press it -> choose who to tell. Pressing a recipient sends
     // car/atech/checkin {"to":"mom"|"dad"|"both"}; the hub answers on car/atech/checkin/result.
-    enum CheckinMenu { MENU_MAIN, MENU_SEND, MENU_STATUS };
+    enum CheckinMenu { MENU_MAIN, MENU_SEND, MENU_STATUS, MENU_ACCIDENT };
     const char* const MAIN_ITEMS[] = {"I'm ok"};
     const char* const SEND_ITEMS[] = {"Send to mom", "Send to dad", "Send to both", "Go back"};
     const char* const SEND_TO[]    = {"mom", "dad", "both"};
@@ -58,6 +59,69 @@ code:
     uint16_t statusColor = ATECH_FG;
     unsigned long statusUntil = 0;     // when the status screen closes; 0 = waiting for the hub
     unsigned long checkinSentAt = 0;   // 0 = no check-in waiting for a result
+
+    // ---------- Accident detection: orientation sensor (IMU) on port 9 ----------
+    // Crash: total acceleration over CRASH_G (the sensor tops out at 2 g per axis, about
+    // 3.4 g in total). Flip: "down" turns more than FLIP_DEG away from where it was at
+    // power-on and stays there for FLIP_HOLD_MS while the board is still. Either opens a
+    // 10 s "ARE YOU OK?" countdown. A knob press cancels it; otherwise car/atech/accident
+    // {"kind":"crash"|"flip"} goes to the hub, which alerts every chat with the location.
+    enum AccidentKind { ACC_NONE, ACC_CRASH, ACC_FLIP };
+    static const float CRASH_G = 2.5f;
+    static const float FLIP_DEG = 60.0f;
+    static const unsigned long FLIP_HOLD_MS = 2000;
+    static const unsigned long ACCIDENT_COUNTDOWN_MS = 10000;
+    static const unsigned long ACCIDENT_REPLY_TIMEOUT_MS = 90000;   // hub may wait 60 s for a location
+
+    bool imuOk = false;
+    float downX = 0, downY = 0, downZ = 1;   // unit "down" vector measured at power-on
+    AccidentKind accidentKind = ACC_NONE;
+    unsigned long accidentAt = 0;            // countdown start
+    bool accidentPending = false;            // countdown ran out, not yet handed to the hub
+    unsigned long accidentSentAt = 0;        // 0 = no accident alert waiting for the hub's reply
+    unsigned long crashQuietUntil = 0;       // ignore jolts until then (after a cancel)
+    unsigned long flipSince = 0;             // when the board tipped over; 0 = upright
+    bool flipArmed = true;                   // one flip alert per flip: re-armed once upright again
+
+    const char* accidentName(AccidentKind k) { return k == ACC_FLIP ? "flip" : "crash"; }
+    int accidentSecondsLeft() {
+      unsigned long e = millis() - accidentAt;
+      return e >= ACCIDENT_COUNTDOWN_MS ? 0 : (int)((ACCIDENT_COUNTDOWN_MS - e + 999) / 1000);
+    }
+
+    void imuBaseline() {
+      imuOk = imu.isConnected();
+      if (!imuOk) { logLine("imu: no orientation sensor on port 9, accident detection off"); return; }
+      imu.setShakeThreshold(CRASH_G);
+      delay(200);                            // let the 100 Hz task take its first readings
+      float sx = 0, sy = 0, sz = 0;
+      for (int i = 0; i < 50; i++) { sx += imu.readAccelX(); sy += imu.readAccelY(); sz += imu.readAccelZ(); delay(10); }
+      float m = sqrtf(sx * sx + sy * sy + sz * sz);
+      if (m > 1.0f) { downX = sx / m; downY = sy / m; downZ = sz / m; }
+      imu.wasShaken();                       // drop anything from power-on handling
+      char b[96]; snprintf(b, sizeof b, "imu: %s ready, down=(%.2f, %.2f, %.2f)", imu.getChipName(), downX, downY, downZ);
+      logLine(b);
+    }
+
+    AccidentKind detectAccident() {
+      if (!imuOk) return ACC_NONE;
+      bool jolt = imu.wasShaken();           // always read, so an old jolt can't fire later
+      float ax = imu.readAccelX(), ay = imu.readAccelY(), az = imu.readAccelZ();
+      float m = sqrtf(ax * ax + ay * ay + az * az);
+      bool still = fabsf(m - 1.0f) < 0.3f;
+      float tilt = 0;
+      if (m > 0.01f) {
+        float c = (ax * downX + ay * downY + az * downZ) / m;
+        tilt = acosf(c > 1 ? 1 : c < -1 ? -1 : c) * 57.2958f;
+      }
+      if (still && tilt > FLIP_DEG) { if (!flipSince) flipSince = millis(); }
+      else flipSince = 0;
+      if (still && tilt < FLIP_DEG - 20) flipArmed = true;
+      if (menu == MENU_ACCIDENT || accidentPending || accidentSentAt) return ACC_NONE;   // one at a time
+      if (jolt && (long)(millis() - crashQuietUntil) >= 0) return ACC_CRASH;
+      if (flipArmed && flipSince && millis() - flipSince >= FLIP_HOLD_MS) { flipArmed = false; return ACC_FLIP; }
+      return ACC_NONE;
+    }
 
     int menuCount() { return menu == MENU_MAIN ? 1 : 4; }
     const char* menuItem(int i) { return menu == MENU_MAIN ? MAIN_ITEMS[i] : SEND_ITEMS[i]; }
@@ -75,7 +139,15 @@ code:
       menuDirty = false;
       int16_t w = screen.width();
       screen.clear();
-      if (menu == MENU_STATUS) {
+      if (menu == MENU_ACCIDENT) {
+        char n[4]; snprintf(n, sizeof n, "%d", accidentSecondsLeft());
+        screen.displayText("POS ACCIDENT DETECTED", 6, 3, 1, ATECH_ALERT);
+        screen.displayText("ARE YOU OK?", 6, 16, 2, ATECH_FG);
+        screen.displayText(n, 6, 40, 4, ATECH_ALERT);
+        screen.fillRoundRect(62, 38, w - 66, 26, 4, ATECH_ACCENT);
+        screen.displayText("I'm ok", 74, 43, 2, ATECH_FG);
+        screen.displayText("press the knob", 64, 69, 1, ATECH_MUTED);
+      } else if (menu == MENU_STATUS) {
         screen.displayText(statusTitle, 6, 8, 2, statusColor);
         screen.setTextSize(1);
         screen.setTextColor(ATECH_MUTED);
@@ -124,6 +196,33 @@ code:
       }
     }
 
+    void startAccident(AccidentKind k) {
+      accidentKind = k;
+      accidentAt = millis();
+      checkinSentAt = 0;                     // a late check-in reply must not replace this screen
+      menu = MENU_ACCIDENT; menuDirty = true;
+      knob.wasPressed();                     // drop a press from before the accident
+      knob.setRingColor(255, 0, 0);
+      char b[48]; snprintf(b, sizeof b, "accident: %s detected, 10 s countdown", accidentName(k)); logLine(b);
+    }
+
+    void endAccidentCountdown() { knob.setRingColor(10, 132, 255); }
+
+    // Hub reply on car/atech/accident/result: {"status":"sent"} or {"status":"error","reason":"..."}
+    void onAccidentResult(const String& p) {
+      if (!accidentSentAt) return;
+      accidentSentAt = 0;
+      if (p.indexOf("\"sent\"") >= 0) showStatus("Alert sent", "Your contacts were asked to call you.", ATECH_WARN, 10000);
+      else if (p.indexOf("without location") >= 0) showStatus("Alert sent", "Sent without location: no recent GPS fix.", ATECH_WARN, 10000);
+      else {
+        String reason = "Unknown error";
+        int a = p.indexOf("\"reason\":\"");
+        if (a >= 0) { a += 10; int b = p.indexOf('"', a); if (b > a) reason = p.substring(a, b); }
+        showStatus("Failed", reason, ATECH_ALERT, 10000);
+      }
+      logLine(p.indexOf("\"sent\"") >= 0 ? "accident: hub sent the alert" : "accident: hub reported a problem");
+    }
+
     void setLight(bool on) {
       lightOn = on;
       if (on) grid.setAll(255, 255, 255); else grid.clear();
@@ -146,6 +245,8 @@ code:
         logLine(p.indexOf("sent") >= 0 ? "sos: hub sent the alert" : "sos: hub reported a problem");
       } else if (t == "car/atech/checkin/result") {
         onCheckinResult(p);
+      } else if (t == "car/atech/accident/result") {
+        onAccidentResult(p);
       }
     }
 
@@ -211,6 +312,7 @@ code:
               mqtt.subscribe("car/atech/light");
               mqtt.subscribe("car/atech/notify");
               mqtt.subscribe("car/atech/checkin/result");
+              mqtt.subscribe("car/atech/accident/result");
               logLine("mqtt: connected");
             } else {
               logLine("mqtt: connect failed");
@@ -244,6 +346,7 @@ code:
     grid.clear(); grid.show();
     knob.setAcceleration(false);       // one detent = one menu row
     knob.setRingColor(10, 132, 255);
+    imuBaseline();                     // the board must be still in its mounted position at power-on
   loop: |
     // Report loop stalls: anything that blocks here makes the knob and buttons lag.
     static unsigned long lastLoopAt = 0;
@@ -300,11 +403,51 @@ code:
     long knobPos = knob.getPosition();
     long steps = knobLast - knobPos;   // the knob counts down when turned right; right = move down
     knobLast = knobPos;
-    if (steps && menu != MENU_STATUS) {
+    if (steps && (menu == MENU_MAIN || menu == MENU_SEND)) {
       menuSel = constrain(menuSel + (int)steps, 0, menuCount() - 1);
       menuDirty = true;
     }
-    if (knob.wasPressed()) {
+
+    // Scenario 4: crash or flip -> "ARE YOU OK?" countdown; no knob press in 10 s -> alert.
+    AccidentKind detected = detectAccident();
+    if (detected != ACC_NONE) startAccident(detected);
+    bool knobPressed = knob.wasPressed();
+    if (menu == MENU_ACCIDENT) {
+      if (knobPressed) {
+        knobPressed = false;             // used up here, not by the menu below
+        endAccidentCountdown();
+        crashQuietUntil = millis() + 3000;
+        logLine("accident: driver pressed I'm ok, no alert");
+        showStatus("Cancelled", "Glad you're ok. No alert was sent.", ATECH_OK, 3000);
+      } else if (accidentSecondsLeft() == 0) {
+        endAccidentCountdown();
+        accidentPending = true;
+        showStatus("Alerting...", "Sending the accident alert. Press the knob to cancel.", ATECH_ALERT, 0);
+      } else {
+        static int shownSec = -1;
+        int sec = accidentSecondsLeft();
+        if (sec != shownSec || menuDirty) { shownSec = sec; menuDirty = true; }
+      }
+    } else if (knobPressed && accidentPending) {
+      knobPressed = false;               // not handed to the hub yet: the driver can still stop it
+      accidentPending = false;
+      logLine("accident: cancelled before it reached the hub");
+      showStatus("Cancelled", "No alert was sent.", ATECH_OK, 3000);
+    }
+    if (accidentPending && mqtt.connected()) {
+      char json[40]; snprintf(json, sizeof json, "{\"kind\":\"%s\"}", accidentName(accidentKind));
+      mqtt.publish("car/atech/accident", json);
+      accidentPending = false;
+      accidentSentAt = millis();
+      showStatus("Alerting...", "Telling your contacts...", ATECH_ALERT, 0);
+      logLine(json);
+    }
+    if (accidentSentAt && millis() - accidentSentAt > ACCIDENT_REPLY_TIMEOUT_MS) {
+      accidentSentAt = 0;
+      showStatus("No reply", "The hub didn't confirm the accident alert.", ATECH_ALERT, 10000);
+    }
+
+    if (knobPressed) {
       if (menu == MENU_MAIN) openMenu(MENU_SEND);
       else if (menu == MENU_SEND) { if (menuSel == SEND_BACK) openMenu(MENU_MAIN); else sendCheckin(menuSel); }
       else if (statusUntil) openMenu(MENU_MAIN);   // a press closes a result early

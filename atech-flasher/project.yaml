@@ -12,6 +12,7 @@ code:
   globals: |
     #include <WiFi.h>
     #include <PubSubClient.h>
+    #include <lwip/sockets.h>
 
     static const char* WIFI_SSID = "@WIFI_SSID@";   // filled in from secrets.json by make_compose.py
     static const char* WIFI_PASS = "@WIFI_PASS@";
@@ -153,9 +154,45 @@ code:
       }
     }
 
+    // Non-blocking check that the hub's port answers. mqtt.connect() blocks for up to 3 s
+    // when the Jetson isn't on the network (e.g. in the car without it), which froze the
+    // knob and buttons. So probe with a non-blocking socket first and only call
+    // mqtt.connect() once the Jetson has answered, when it returns at once.
+    int probeFd = -1;
+    unsigned long probeStartedAt = 0;
+    void probeClose() { if (probeFd >= 0) { close(probeFd); probeFd = -1; } }
+    bool probeStart() {
+      probeClose();
+      probeFd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (probeFd < 0) return false;
+      fcntl(probeFd, F_SETFL, fcntl(probeFd, F_GETFL, 0) | O_NONBLOCK);
+      sockaddr_in addr = {};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(MQTT_PORT);
+      addr.sin_addr.s_addr = inet_addr(MQTT_HOST);
+      if (connect(probeFd, (sockaddr*)&addr, sizeof addr) < 0 && errno != EINPROGRESS) { probeClose(); return false; }
+      probeStartedAt = millis();
+      return true;
+    }
+    // 1 = the hub answered, 0 = still waiting, -1 = failed or timed out (closed).
+    int probePoll() {
+      if (probeFd < 0) return -1;
+      fd_set w; FD_ZERO(&w); FD_SET(probeFd, &w);
+      timeval tv = {0, 0};
+      if (select(probeFd + 1, NULL, &w, NULL, &tv) > 0) {
+        int err = 0; socklen_t len = sizeof err;
+        getsockopt(probeFd, SOL_SOCKET, SO_ERROR, &err, &len);
+        probeClose();
+        return err == 0 ? 1 : -1;
+      }
+      if (millis() - probeStartedAt > 5000) { probeClose(); return -1; }
+      return 0;
+    }
+
     void keepConnected() {
       static unsigned long lastTry = 0;
       if (WiFi.status() != WL_CONNECTED) {
+        probeClose();
         if (millis() - lastTry > 15000) {
           lastTry = millis();
           char buf[64]; snprintf(buf, sizeof buf, "wifi: retry, last status=%d", (int)WiFi.status());
@@ -168,16 +205,28 @@ code:
       }
       static bool wifiLogged = false;
       if (!wifiLogged) { wifiLogged = true; char b[64]; snprintf(b, sizeof b, "wifi: connected ip=%s", WiFi.localIP().toString().c_str()); logLine(b); }
-      if (!mqtt.connected() && millis() - lastTry > 3000) {
-        lastTry = millis();
-        if (mqtt.connect("atech-car", "car/atech/status", 1, true, "{\"online\":false}")) {
-          mqtt.publish("car/atech/status", "{\"online\":true}", true);
-          mqtt.subscribe("car/atech/light");
-          mqtt.subscribe("car/atech/notify");
-          mqtt.subscribe("car/atech/checkin/result");
-          logLine("mqtt: connected");
-        } else {
-          logLine("mqtt: connect failed");
+      if (!mqtt.connected()) {
+        static bool unreachableLogged = false;
+        if (probeFd >= 0) {
+          int r = probePoll();
+          if (r == 1) {
+            unreachableLogged = false;
+            if (mqtt.connect("atech-car", "car/atech/status", 1, true, "{\"online\":false}")) {
+              mqtt.publish("car/atech/status", "{\"online\":true}", true);
+              mqtt.subscribe("car/atech/light");
+              mqtt.subscribe("car/atech/notify");
+              mqtt.subscribe("car/atech/checkin/result");
+              logLine("mqtt: connected");
+            } else {
+              logLine("mqtt: connect failed");
+            }
+          } else if (r < 0 && !unreachableLogged) {
+            unreachableLogged = true;   // log once, not every retry
+            logLine("mqtt: hub not reachable, retrying every 3 s");
+          }
+        } else if (millis() - lastTry > 3000) {
+          lastTry = millis();
+          probeStart();
         }
       }
       mqtt.loop();
@@ -201,6 +250,14 @@ code:
     knob.setAcceleration(false);       // one detent = one menu row
     knob.setRingColor(10, 132, 255);
   loop: |
+    // Report loop stalls: anything that blocks here makes the knob and buttons lag.
+    static unsigned long lastLoopAt = 0;
+    unsigned long loopNow = millis();
+    if (lastLoopAt && loopNow - lastLoopAt > 250) {
+      char b[48]; snprintf(b, sizeof b, "loop: stalled %lu ms", loopNow - lastLoopAt); logLine(b);
+    }
+    lastLoopAt = loopNow;
+
     keepConnected();
 
     // Scenario 1: tap the port 3 button -> toggle the light (locally, instant)

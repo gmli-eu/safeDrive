@@ -12,6 +12,7 @@ iPhone (OwnTracks) ---MQTT location--------+
 | ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker plus `hub.py`: turns the SOS long press into Telegram alerts with live location              |
 | `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware (`project.yaml`), flashes it to the board over USB, then streams the board's output |
+| `unoq-camera/`   | Arduino UNO Q (systemd service)    | `stream.py`: serves the USB camera's MJPEG over HTTP on port 8090 (`/stream.mjpg`, `/frame.jpg`, `/health`) |
 | `tools/`         | dev machine                        | `deploy.py` deploys an app and waits until it's up; `mqtt_peek.py` watches the broker                         |
 
 ## Setup
@@ -19,6 +20,7 @@ iPhone (OwnTracks) ---MQTT location--------+
 1. **Secrets** (both are ignored by git):
     - `jetson-hub/secrets.json`: copy `secrets.example.json` and add the bot tokens from BotFather.
     - `atech-flasher/secrets.json`: copy `secrets.example.json` and add the Wi-Fi name and password.
+    - `unoq-camera/secrets.json`: copy `secrets.example.json` and add the Uno Q's Linux password and its address on the hotspot.
 2. **Wi-Fi**: the board only sees 2.4 GHz. On an iPhone hotspot, turn on _Maximize Compatibility_. The firmware expects the Jetson at `172.20.10.2` (`MQTT_HOST` in `atech-flasher/project.yaml`).
 3. **Phone location**: install OwnTracks and set Mode MQTT, Host `172.20.10.2`, Port `1883`, TLS off, Authentication off, location access _Always_, monitoring _Move_. Turn on remote commands (`cmd`) too: when the hub's last location is over 1 minute old, it asks the phone for a new one.
 4. **Telegram**: each parent opens their bot and taps **Start**. The bot replies "✅ SafeDrive connected".
@@ -29,13 +31,14 @@ iPhone (OwnTracks) ---MQTT location--------+
 ```sh
 python3 tools/deploy.py jetson-hub      # ~2 s once cached
 python3 tools/deploy.py atech-flasher   # ~1 min: build, flash, wait for the board's MQTT connection
+python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over SSH, restart, wait for frames
 ```
 
 `deploy.py` runs the app's `make_compose.py`, which generates `compose.yml` with the code and secrets embedded. Then it runs `wendy run --detach` and follows the logs until the app is up. The device defaults to `wendyos-hackathon-device-4.local`; set `WENDY_DEVICE` to override it. Each run's `compose.yml` is generated and holds secrets, so it isn't committed.
 
 ## SOS button (port 6)
 
-- Hold 2 s: two amber flashes, and the alert goes out to every linked chat at once, with a live location. If the last location is over 1 minute old, the hub asks the phone for a new one and the live location moves there when it arrives. With no location at all, the live location follows as soon as the phone answers (up to 60 s).
+- Hold 2 s: two amber flashes, and the alert goes out to every linked chat at once, with a live location. A photo from the car's camera follows, then a clip from 10 s before to 5 s after the press (see Camera). If the last location is over 1 minute old, the hub asks the phone for a new one and the live location moves there when it arrives. With no location at all, the live location follows as soon as the phone answers (up to 60 s).
 - Otherwise the light stays off, so the button stays discreet. It never turns red, even when the hub reports a problem (no chats linked, every send failed, or no recent GPS fix). The problem only shows up in the board's log.
 - The white light while it's pressed is built into the V2.0 button, and firmware can't turn it off.
 
@@ -55,4 +58,12 @@ The port 3 button toggles the light grid.
 - Either one shows **POS ACCIDENT DETECTED / ARE YOU OK?** with a 10 s countdown, and the knob ring turns red. Press the knob for **I'm ok** to cancel.
 - If nobody presses, every linked chat gets "possible accident detected" with the live location, plus: call the driver, and if they don't answer, call emergency services (`EMERGENCY_NUMBER`, default `112`). The location works the same as for the SOS button. The screen shows **Alert sent**, **Failed** with the reason, or **No reply**.
 - If the hub can't be reached when the countdown ends, the alert waits and goes out as soon as it can. Until then, a knob press still cancels it.
+- The alert also gets a photo from the car's camera and a clip from 15 s before the impact through the countdown (see Camera).
 - Nothing calls emergency services automatically. The message asks the people in the chats to do it.
+
+## Camera (Arduino UNO Q + Arduino USB Camera)
+
+- The camera goes into a powered USB-C hub on the Uno Q's only USB-C port. The Uno Q joins the hotspot by itself and serves the camera at `http://172.20.10.4:8090/` (live view), `/frame.jpg` (newest frame) and `/stream.mjpg`.
+- The frames are the camera's own JPEGs, never re-encoded: 1280×720 at 15 fps, about 90 KB each (about 1.3 MB/s). Change `WIDTH`, `HEIGHT` and `FPS` in `unoq-camera/safedrive-camera.service`.
+- On the Jetson, `vision.py` (part of `car-hub`) keeps the last 40 s of frames in RAM only. With an SOS or accident alert, `hub.py` sends every linked chat a photo, then an H.264 clip (960 px wide, about 15 KB per second of a still scene). If the camera is off, the alert goes out without them.
+- Keep the Uno Q off the Jetson's USB: there it shows up as a second serial port next to the Atech board.

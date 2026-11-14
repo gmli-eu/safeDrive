@@ -4,7 +4,7 @@
 # - "I'm ok" in the screen menu -> "I'm ok and I've arrived." + location to mom, dad or both.
 # - crash or flip detected by the board's orientation sensor, and the driver doesn't answer
 #   "ARE YOU OK?" within 10 s -> accident alert + live location to everyone.
-import json, math, os, pathlib, socket, threading, time, urllib.parse, urllib.request
+import json, math, os, pathlib, socket, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from concurrent.futures import ThreadPoolExecutor
 import paho.mqtt.client as mqtt
 
@@ -25,6 +25,11 @@ FIX_WAIT = float(os.environ.get("FIX_WAIT", "30"))           # check-in: how lon
 MOVED_M = float(os.environ.get("MOVED_M", "100"))            # check-in: send the late answer only if it's this far off
 SOS_FIX_WAIT = float(os.environ.get("SOS_FIX_WAIT", "60"))   # SOS with no location at all: keep waiting this long
 EMERGENCY_NUMBER = os.environ.get("EMERGENCY_NUMBER", "112")  # named in the accident alert
+# Camera (vision.py): photo + clip with SOS and accident alerts.
+VISION_URL = os.environ.get("VISION_URL", "http://127.0.0.1:8091")
+SOS_CLIP_BEFORE, SOS_CLIP_AFTER = 10, 5      # seconds around the SOS long press
+ACCIDENT_COUNTDOWN = 10                      # the board's "ARE YOU OK?" countdown (ACCIDENT_COUNTDOWN_MS)
+ACCIDENT_CLIP_BEFORE = 15                    # seconds before the impact
 # A Telegram live location that's still being shared stays valid this long without an update
 # (Telegram only sends a new position when the phone moves).
 LIVE_SHARE_MAX_AGE = int(os.environ.get("LIVE_SHARE_MAX_AGE", str(6 * 3600)))
@@ -111,13 +116,56 @@ def tg(token, method, **params):
     if not body.get("ok"): raise RuntimeError(f"{method}: {body.get('description')}")
     return body["result"]
 
+def tg_upload(token, method, field, filename, data, ctype, **params):
+    # Like tg(), but multipart: sendPhoto / sendVideo with the file in the request.
+    boundary = uuid.uuid4().hex
+    parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+             for k, v in params.items() if v is not None]
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+                 f'Content-Type: {ctype}\r\n\r\n'.encode() + data + b"\r\n")
+    body = b"".join(parts) + f"--{boundary}--\r\n".encode()
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/{method}", data=body,
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r: res = json.load(r)
+    except urllib.error.HTTPError as e: res = json.load(e)
+    if not res.get("ok"): raise RuntimeError(f"{method}: {res.get('description')}")
+    return res["result"]
+
+def send_media(label, targets, start, end):
+    # Camera photo right away, then a clip of [start, end] (vision.py waits until end has passed).
+    # Best effort: a missing camera never holds up or fails the alert itself.
+    def fetch(path, timeout):
+        with urllib.request.urlopen(VISION_URL + path, timeout=timeout) as r: return r.read()
+    def to_all(method, field, name, data, ctype, **params):
+        def one(target):
+            try: tg_upload(target[0], method, field, name, data, ctype, chat_id=target[1], **params)
+            except Exception as e: log(f"{label} {field} to {target[1]} failed:", e)
+        with ThreadPoolExecutor(max_workers=len(targets)) as pool: list(pool.map(one, targets))
+    t0 = time.time()
+    try:
+        photo = fetch("/photo.jpg", 5)
+        to_all("sendPhoto", "photo", "car.jpg", photo, "image/jpeg",
+               caption=f"📷 In the car, {time.strftime('%H:%M:%S')}")
+        log(f"{label} photo sent ({len(photo) // 1024} KB) after {time.time() - t0:.1f}s")
+    except Exception as e:
+        log(f"{label} photo unavailable:", e)
+    try:
+        clip = fetch(f"/clip.mp4?start={start:.3f}&end={end:.3f}", max(end - time.time(), 0) + 90)
+        to_all("sendVideo", "video", "car.mp4", clip, "video/mp4", supports_streaming="true",
+               caption=f"🎥 In the car, {time.strftime('%H:%M:%S', time.localtime(start))}"
+                       f"–{time.strftime('%H:%M:%S', time.localtime(end))}")
+        log(f"{label} clip sent ({len(clip) // 1024} KB) after {time.time() - t0:.1f}s")
+    except Exception as e:
+        log(f"{label} clip unavailable:", e)
+
 def publish(topic, payload, retain=False):
     client.publish(topic, json.dumps(payload), qos=1, retain=retain)
 
 def set_mode(mode): publish("car/hub/state", {"mode": mode}, retain=True)
 
 # ---------- scenarios 2 and 4: SOS long press, accident ----------
-def send_alert(label, head, tail, reply_topic):
+def send_alert(label, head, tail, reply_topic, media=None):
     # Text + live location to every linked chat. Goes out at once with the last fix; the phone
     # is asked for a new one at the same time. When it answers, the live location moves to it
     # (update_live). With no fix at all, the live location follows as soon as the phone
@@ -157,6 +205,7 @@ def send_alert(label, head, tail, reply_topic):
             list(pool.map(send_one, targets))
         log(f"{label} sent to {len(targets) - len(errors)}/{len(targets)} chats in {time.time() - t0:.1f}s", errors or "")
         if len(errors) == len(targets): raise RuntimeError("; ".join(errors))
+        if media: threading.Thread(target=send_media, args=(label, targets, *media), daemon=True).start()
         if not f and asked and (f := wait_for_fix(SOS_FIX_WAIT)):
             def follow_up(target):
                 token, chat = target
@@ -177,17 +226,37 @@ def send_alert(label, head, tail, reply_topic):
         publish(reply_topic, {"status": "error", "reason": str(e)[:80].replace('"', "'")})
         set_mode("error")
 
-def send_sos():
-    send_alert("SOS", "🚨 SafeDrive alert: the driver held the emergency button.\n", "", "car/atech/notify")
+def send_sos(at):
+    send_alert("SOS", "🚨 SafeDrive alert: the driver held the emergency button.\n", "", "car/atech/notify",
+               media=(at - SOS_CLIP_BEFORE, at + SOS_CLIP_AFTER))
 
 ACCIDENT_KIND = {"crash": "a hard impact", "flip": "the car seems to have flipped or rolled over"}
 
-def send_accident(kind):
+def send_accident(kind, at):
     head = (f"🚨 SafeDrive: possible accident detected ({ACCIDENT_KIND.get(kind, 'unknown cause')}). "
             "The driver didn't answer \"ARE YOU OK?\" on the car's screen within 10 s.\n")
     tail = (f"\n\n👉 Call the driver now. If they don't answer, call emergency services "
             f"({EMERGENCY_NUMBER}) and give them this location.")
-    send_alert("accident", head, tail, "car/atech/accident/result")
+    # The board reports only after its 10 s countdown, so the impact was ~ACCIDENT_COUNTDOWN s ago:
+    # the clip covers the run-up to the impact and the countdown after it.
+    send_alert("accident", head, tail, "car/atech/accident/result",
+               media=(at - ACCIDENT_COUNTDOWN - ACCIDENT_CLIP_BEFORE, at))
+
+# Threat seen by the camera (voice.py's Nemotron loop publishes car/vision/threat). Silent in the car:
+# nothing on the screen or speaker (car/vision/threat/result has no subscriber), so whoever is
+# threatening the driver doesn't learn that an alert went out.
+THREAT_LEVELS = {"high"}                      # other levels are only logged
+THREAT_COOLDOWN = 120                         # seconds: one alert per incident, not one per camera frame
+THREAT_CLIP_BEFORE, THREAT_CLIP_AFTER = 10, 5
+last_threat = 0.0
+
+def send_threat(what, at):
+    head = (f"🚨 SafeDrive: the car's camera may have seen a threat to the driver: {what or 'unclear'}.\n"
+            "This is automatic image recognition and can be wrong: check the photo and clip below.\n")
+    tail = ("\n\n👉 Don't call the driver: a ringing phone could put them at risk. If the photo confirms it, "
+            f"call emergency services ({EMERGENCY_NUMBER}) and give them this location.")
+    send_alert("threat", head, tail, "car/vision/threat/result",
+               media=(at - THREAT_CLIP_BEFORE, at + THREAT_CLIP_AFTER))
 
 # ---------- scenario 3: "I'm ok" check-in from the screen menu ----------
 CHECKIN_TO = {"mom": {"mom"}, "dad": {"dad"}, "both": {"mom", "dad"}}
@@ -267,7 +336,7 @@ def on_connect(c, userdata, flags, rc, props=None):
     set_mode("idle")
 
 def on_message(c, userdata, m):
-    global fix
+    global fix, last_threat
     try: data = json.loads(m.payload.decode() or "null")
     except Exception: data = m.payload.decode(errors="replace")
     if m.topic.startswith("owntracks/"):
@@ -282,10 +351,19 @@ def on_message(c, userdata, m):
     log("MQTT", m.topic, data)
     if m.topic == "car/atech/button" and isinstance(data, dict) and data.get("action") == "long_press" and data.get("id") == "sos":
         set_mode("alerting")
-        threading.Thread(target=send_sos, daemon=True).start()
+        threading.Thread(target=send_sos, args=(time.time(),), daemon=True).start()
     elif m.topic == "car/atech/accident" and isinstance(data, dict):
         set_mode("alerting")
-        threading.Thread(target=send_accident, args=(data.get("kind"),), daemon=True).start()
+        threading.Thread(target=send_accident, args=(data.get("kind"), time.time()), daemon=True).start()
+    elif m.topic == "car/vision/threat" and isinstance(data, dict):
+        if data.get("level") not in THREAT_LEVELS: return
+        if time.time() - last_threat < THREAT_COOLDOWN:
+            log(f"threat ignored: last alert {time.time() - last_threat:.0f}s ago (cooldown {THREAT_COOLDOWN}s)"); return
+        last_threat = time.time()
+        try: at = min(float(data.get("captured_at") or 0), time.time()) or time.time()
+        except (TypeError, ValueError): at = time.time()
+        if time.time() - at > 30: at = time.time()   # a stale timestamp would ask for frames already dropped
+        threading.Thread(target=send_threat, args=(str(data.get("what", ""))[:200], at), daemon=True).start()
     elif m.topic == "car/atech/checkin" and isinstance(data, dict):
         threading.Thread(target=send_checkin, args=(data.get("to"),), daemon=True).start()
 

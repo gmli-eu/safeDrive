@@ -269,10 +269,12 @@ def transcribe(pcm):
         return ""
     t = time.time()
     # Keep the prompt to the wake words: Whisper sometimes repeats its prompt on unclear audio.
-    segs, _ = whisper.transcribe(audio, language="en", beam_size=3, vad_filter=False, initial_prompt="Hey car.")
+    # The contact names as hints, so a short "Dad" isn't heard as "that" or "dead".
+    hint = "Hey car." + "".join(f" {c.capitalize()}." for c in CONTACTS)
+    segs, _ = whisper.transcribe(audio, language="en", beam_size=3, vad_filter=False, initial_prompt=hint)
     text = " ".join(x.text.strip() for x in segs).strip()
     log(f"heard in {time.time() - t:.1f}s: {text!r}")
-    return WAKE.sub("", text).strip()
+    return fix_names(WAKE.sub("", text).strip())
 
 # ---------- what does the driver want? ----------
 ACTIONS = ["send_message", "ask_google", "light", "answer", "unclear"]
@@ -322,8 +324,8 @@ def understand(text):
 def fallback(text):
     # Works without the LLM (still downloading, or down): the common phrasings only.
     t = text.strip()
-    m = re.match(r"(?:please\s+)?(?:send|text|message|tell)\s+(?:a\s+)?(?:message\s+|text\s+)?(?:to\s+)?(\w+)(?:\s+and\s+(\w+))?\W*(?:that\s+|saying\s+)?(.+)", t, re.I)
-    if m:
+    m = re.match(r"(?:please\s+)?(?:send|sent|text|message|tell)\s+(?:a\s+)?(?:message\s+|text\s+)?(?:to\s+)?(\w+)(?:\s+and\s+(\w+))?\W*(?:that\s+|saying\s+)?(.+)", t, re.I)
+    if m and all(w.lower() in (*CONTACTS, "both", "everyone", "all") for w in m.group(1, 2) if w):   # "tell me a joke" isn't a message
         to = [w.lower() for w in m.group(1, 2) if w]
         return {"action": "send_message", "to": ["all"] if {"both", "everyone", "all"} & set(to) else to, "text": m.group(3)}
     # "Google" anywhere ("ask Google", "let's google", Whisper mishears the verb), or anything
@@ -350,10 +352,11 @@ def handle(s, pcm):
     if not text:
         return say(s, "Sorry, I didn't catch that.", "Sorry", "Didn't catch that. Press the button and try again.", "warn")
     status("Heard", text, "fg", 30000)
+    if answer_who(s, text): return
     intent = understand(text)
     if not current(s): return
     act = intent.get("action")
-    if act == "send_message": send_message(s, intent)
+    if act == "send_message": send_message(s, intent, text)
     elif act == "ask_google":
         # Online only when the driver asks for Google by name: everything else stays in the car,
         # whatever the local model decided.
@@ -368,6 +371,19 @@ def handle(s, pcm):
         say(s, reply, "Answer", reply, "fg")
     else:
         say(s, "Sorry, I didn't understand. You can say: send a message to mom, or ask Google.", "Sorry", "Didn't understand: " + text, "warn")
+
+# Whisper's usual mishearings of the contact names ("send dad" -> "send dead").
+NAME_FIXES = [(re.compile(r"\b(send|sent|tell|text|message|to)\s+(?:a\s+message\s+to\s+)?dead\b", re.I), r"\1 dad"),
+              (re.compile(r"\b(mum|mam|mother)\b", re.I), "mom"), (re.compile(r"\bfather\b", re.I), "dad")]
+EVERYONE = re.compile(r"\b(?:both|every(?:one|body)|all|family|parents)\b", re.I)
+
+def fix_names(text):
+    for pat, rep in NAME_FIXES: text = pat.sub(rep, text)
+    return text
+
+def addressed_to_all(said):
+    # Only if the driver said so: "both", "everyone", ... or named every contact.
+    return bool(EVERYONE.search(said)) or (len(CONTACTS) > 1 and all(re.search(rf"\b{re.escape(c)}\b", said, re.I) for c in CONTACTS))
 
 def resolve_contacts(to):
     to = [str(w).lower() for w in to or []]
@@ -384,11 +400,39 @@ def hub_send(to, msg):
     if not r: return False, "the hub didn't answer, so it may not have gone out"
     return r.get("status") == "sent", r.get("reason") or ""
 
-def send_message(s, intent):
+PENDING_S = 30
+# Words that can surround the name in an answer ("send it to dad", "I said to dad", "just mom please").
+WHO_FILLER = {"to", "and", "send", "sent", "it", "please", "the", "just", "i", "said", "say", "says", "of", "one", "oh", "uh", "um",
+              "so", "my", "you", "can", "for", "message", "a", "him", "her", "them", "only", "yes", "yeah", "ok", "okay", "is", "s"}
+# Only while the car waits for "Who should I send it to?": one-word answers that sound like a contact.
+SOUNDS_LIKE = {"dead": "dad", "that": "dad", "dat": "dad", "daddy": "dad", "dud": "dad", "dan": "dad", "ted": "dad", "debt": "dad",
+               "mum": "mom", "mam": "mom", "ma": "mom", "mama": "mom", "mommy": "mom", "mummy": "mom", "mother": "mom", "father": "dad"}
+pending_message = {}       # a message waiting for its recipient: {"text", "until"}
+
+def answer_who(s, said):
+    # After "Who should I send it to?": if this press is only a name ("Dad", "mom and dad", "both"),
+    # send the waiting message to them. Any other request cancels the waiting message.
+    if not pending_message: return False
+    msg, until = pending_message.get("text"), pending_message.get("until", 0)
+    pending_message.clear()
+    if time.time() > until: return False
+    words = re.sub(r"[^a-z ]", " ", said.lower()).split()
+    if len(words) > 7: return False                              # a whole new request, not an answer
+    words = [SOUNDS_LIKE.get(w, w) for w in words if w not in WHO_FILLER]
+    if not words or len(words) > 3: return False
+    if all(w in ("both", "everyone", "all", "family") for w in words): to = ["all"]
+    elif all(w in CONTACTS for w in words): to = ["all"] if set(words) >= set(CONTACTS) and len(CONTACTS) > 1 else sorted(set(words))
+    else: return False
+    send_message(s, {"to": to, "text": msg}, " ".join(words))
+    return True
+
+def send_message(s, intent, said):
     msg = (intent.get("text") or "").strip()
     to, unknown = resolve_contacts(intent.get("to"))
+    if to == ["all"] and not addressed_to_all(said): to = []      # the model guessed "everyone": ask instead
     if not msg or not to or unknown:
         who = " or ".join(CONTACTS) or "mom or dad"
+        if msg: pending_message.update(text=msg, until=time.time() + PENDING_S)   # the next press can just be a name
         return say(s, f"Who should I send it to? You can say {who}.", "Who to?", f"Contacts: {who}", "warn")
     names = "everyone" if to == ["all"] else " and ".join(to)
     status("Sending...", f"To {names}: {msg}", "fg", 45000)
@@ -429,9 +473,10 @@ def gemini_call(contents, system, loc):
                                  data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY})
     with urllib.request.urlopen(req, timeout=45) as r: return json.load(r)
 
-def run_function(name, args):
+def run_function(name, args, said=""):
     if name == "send_message":
         to, unknown = resolve_contacts(args.get("to"))
+        if to == ["all"] and not addressed_to_all(said): return {"ok": False, "error": "the driver didn't say who: ask them which contact"}
         if not to or unknown: return {"ok": False, "error": f"unknown contact; known: {CONTACTS} or all"}
         status("Sending...", f"To {' and '.join(to)}: {args.get('text', '')}", "fg", 45000)
         ok, reason = hub_send(to, str(args.get("text", "")))
@@ -475,7 +520,7 @@ def ask_google(s, query):
             contents.append(content)                       # as returned: keeps tool calls and thought signatures
             replies = []
             for c in calls:
-                out = run_function(c.get("name"), c.get("args") or {})
+                out = run_function(c.get("name"), c.get("args") or {}, query)
                 log("Gemini called", c.get("name"), c.get("args"), "->", out)
                 replies.append({"functionResponse": {"name": c.get("name"), "id": c.get("id"), "response": out}})
             contents.append({"role": "user", "parts": replies})

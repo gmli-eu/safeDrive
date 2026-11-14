@@ -11,7 +11,7 @@ iPhone (OwnTracks) ---MQTT location--------+
 
 | Folder           | Runs on                            | What it does                                                                                                  |
 | ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker plus `hub.py`: turns the SOS long press into Telegram alerts with live location; `voice.py`: the voice assistant |
+| `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker plus `hub.py`: turns the SOS long press into Telegram alerts with live location; `voice.py`: the voice assistant; `dash.py`: the SafeDrive page for the driver's phone |
 | `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware (`project.yaml`), flashes it to the board over USB, then streams the board's output |
 | `unoq-camera/`   | Arduino UNO Q (systemd service)    | `stream.py`: serves the USB camera's MJPEG over HTTP on port 8090 (`/stream.mjpg`, `/frame.jpg`, `/health`) |
 | `tools/`         | dev machine                        | `deploy.py` deploys an app and waits until it's up; `mqtt_peek.py` watches the broker                         |
@@ -51,6 +51,7 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
     - "Hey car, send a message to mom, I'm running 5 min late" (also dad, or both): a Telegram text from that bot, "💬 From the driver: ...". No location is attached.
       A message goes to everyone only if you say "both", "everyone", "all", "family" or "parents" or name every contact; if the model can't tell who, the car asks "Who should I send it to?" instead of guessing, and for 30 s your next press can be just the name ("Dad", "Send it to mom", "Both"; in that answer, sound-alikes such as "that" or "dead" count as dad and "mum" or "ma" as mom). Speech recognition also gets the contact names as hints. Tip: wait for the chime before speaking, and let go half a second after you finish. Common mishearings are fixed first ("send dead" → dad, "mum" → mom).
     - "Hey car, ask Google what's the weather for today", or "find the nearest open pharmacy and text mom I'm stopping there": a Gemini agent with Google Search, Google Maps (at the phone's last location) and the car's own functions (send a message, the light, the cabin camera's latest verdict). It chains them and the answer is read out; it says "One moment" first.
+    - "Hey car, directions to Kamppi" (also "take me to ...", "navigate to ..."): a **Go to Kamppi** button on the SafeDrive page on the phone (see SafeDrive page). Without "Google", no AI service sees the destination: Google Maps looks it up when you tap Go. With "Google" ("ask Google for directions to the nearest open pharmacy"), Gemini finds the exact place with Maps first and puts that on the button.
     - "Hey car, turn on the light" / "turn off the light": the light grid on port 7.
     - Anything else, like a quick fact or a joke, gets a short answer from the local model.
 - Listening stops when you let go (after holding it for more than 0.6 s) or on the second tap (chime, light off), or after 20 s. If it heard no speech at all, it says so and does nothing.
@@ -68,6 +69,15 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 - It judges two things. **Danger to the driver**: only a weapon, hitting or restraining the driver, or grabbing the wheel, gear lever or handbrake counts as danger. That goes to `hub.py` (`car/vision/threat`), which alerts every linked chat silently like SOS, with photo and clip; nothing shows or sounds in the car. A blocked view or covered eyes is only logged. **Back-seat hand signs** (volume down/up, slower, faster, thank you, need a break, all good): spoken to the driver ("From the back seat: ...") after two identical answers in a row, never acted on.
 - Every verdict is published, retained, on `car/vision/nemotron`; the Gemini agent can read the latest one ("is everything OK in the back?").
 - If the camera can't see (the picture is almost uniformly black: lid closed, lens blocked, or a dark cabin at night, since the camera has no infrared) or sends nothing, Nemotron isn't asked, and the board's screen shows a crossed-out camera icon in the top-right corner until the picture is back (`car/vision/camera`, retained: `ok`, `dark` or `off`).
+
+## SafeDrive page (phone in the holder)
+
+- On the driver's phone, open `http://172.20.10.2:8092/` in Safari (the phone is the hotspot, so it always reaches the Jetson) and leave the page on screen. Add it to the home screen to open it faster.
+- Set **Settings → Display & Brightness → Auto-Lock → Never** on that phone. The page can't keep the screen on by itself: the Wake Lock API only works on HTTPS pages, and a silent-video workaround doesn't work on current iOS.
+- Ask the car for directions and the page shows the place with a big **Go to ... →** button. One tap opens Google Maps with the route, ready to start. **Open in Waze instead** does the same in Waze. Both open the website if the app isn't installed.
+- Nothing opens by itself: iOS only lets a page open another app from a tap.
+- When the car corrected a place name it misheard, the card shows what it heard ("Heard "campy"" under Kamppi).
+- The page also says when the cabin camera can't see. The destination is retained on `car/nav/destination`, so a page opened later still shows it; the button stays for 6 hours.
 
 ## Check-in menu (screen on ports 1-2, knob on ports 13-14)
 

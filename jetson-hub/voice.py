@@ -279,12 +279,12 @@ def transcribe(pcm):
     return fix_names(WAKE.sub("", text).strip())
 
 # ---------- what does the driver want? ----------
-ACTIONS = ["send_message", "ask_google", "light", "answer", "unclear"]
+ACTIONS = ["send_message", "ask_google", "directions", "light", "answer", "unclear"]
 NAMES_GOOGLE = re.compile(r"\b(?:google|gemini)\b", re.I)   # the only way a request goes online
 SCHEMA = {"type": "object", "properties": {
     "action": {"type": "string", "enum": ACTIONS},
     "to": {"type": "array", "items": {"type": "string"}},
-    "text": {"type": "string"}, "query": {"type": "string"},
+    "text": {"type": "string"}, "query": {"type": "string"}, "place": {"type": "string"},
     "on": {"type": "boolean"}, "reply": {"type": "string"}}, "required": ["action"]}
 
 def system_prompt():
@@ -292,7 +292,8 @@ def system_prompt():
     return f"""You turn what a driver says to their car into one JSON action. Reply with JSON only.
 Actions:
 - send_message: send a text message. "to" lists who gets it, from: {who}, or ["all"] for both/everyone/the family. "text" is the message itself, as the driver wants it sent (first person, without "send a message to ..." and without "hey car").
-- ask_google: the driver says "Google" (or "Gemini") and asks it something, e.g. "ask Google what's the weather", "Google, find the nearest pharmacy and text mom I'm stopping there". Also use it for questions that need the internet, today's information or places even without the word Google (the car will then tell the driver to say "ask Google"). "query" is the driver's whole request, as a complete sentence.
+- ask_google: the driver says "Google" (or "Gemini") and asks it something, e.g. "ask Google what's the weather", "Google, find the nearest pharmacy and text mom I'm stopping there". Also use it for questions that need the internet, today's information or places (but not for going somewhere: that's directions) even without the word Google (the car will then tell the driver to say "ask Google"). "query" is the driver's whole request, as a complete sentence.
+- directions: the driver wants to go somewhere or asks for directions or a route ("take me to Kamppi", "directions to Mannerheimintie 5", "navigate to the nearest petrol station"). "place" is only the destination, as said ("Kamppi", "Mannerheimintie 5", "nearest petrol station").
 - light: turn the car's light on or off. "on" is true or false.
 - answer: anything else you can answer yourself (simple facts, maths, jokes, small talk). "reply" is the spoken answer: one or two short sentences, no lists or symbols.
 - unclear: empty, cut off, or not understandable."""
@@ -301,6 +302,7 @@ EXAMPLES = [
     ("send message to mom, I'm running 5 min late", {"action": "send_message", "to": ["mom"], "text": "I'm running 5 min late."}),
     ("tell mom and dad that I'm leaving the gym now", {"action": "send_message", "to": ["all"], "text": "I'm leaving the gym now."}),
     ("ask google what's the weather for today", {"action": "ask_google", "query": "What's the weather for today?"}),
+    ("take me to the central railway station", {"action": "directions", "place": "central railway station"}),
     ("turn off the light", {"action": "light", "on": False}),
 ]
 
@@ -335,6 +337,8 @@ def fallback(text):
     m = re.search(r"\b(?:google|gemini)\b\W*(?:for\s+|about\s+)?(.+)", t, re.I)
     if m: return {"action": "ask_google", "query": m.group(1)}
     if re.search(r"\b(?:weather|forecast|news|traffic|score)\b", t, re.I): return {"action": "ask_google", "query": t}   # the car then asks for "ask Google"
+    m = re.search(r"\b(?:directions?|route|navigate|navigation|take me|drive me|get me)\s+(?:to|for)\s+(?:the\s+)?(.+)", t, re.I)
+    if m: return {"action": "directions", "place": re.sub(r"[\s,]+please$", "", m.group(1).strip(" .?!"), flags=re.I)}
     m = re.search(r"\blights?\b.*\b(on|off)\b|\b(on|off)\b.*\blights?\b", t, re.I)
     if m: return {"action": "light", "on": (m.group(1) or m.group(2)).lower() == "on"}
     return {"action": "unclear"}
@@ -364,6 +368,11 @@ def handle(s, pcm):
         # whatever the local model decided.
         if NAMES_GOOGLE.search(text): ask_google(s, text)
         else: say(s, "I can't check that offline. Say 'ask Google' to look it up.", "Offline only", "Say 'ask Google ...' to look it up online.", "warn")
+    elif act == "directions":
+        # With "Google" named, Gemini finds the exact place with Maps first ("the nearest open pharmacy").
+        # Otherwise only the phone page gets the destination: Google Maps looks it up when the driver taps Go.
+        if NAMES_GOOGLE.search(text): ask_google(s, text)
+        else: directions(s, (intent.get("place") or "").strip())
     elif act == "light":
         on = bool(intent.get("on"))
         client.publish("car/atech/light", json.dumps({"on": on}))
@@ -450,6 +459,139 @@ def phone_location():
     live = f.get("live_until", 0) > time.time()
     return f if time.time() - f["tst"] <= (6 * 3600 if live else 1800) else None
 
+# ---------- local place names: "campy" -> "Kamppi" ----------
+# Whisper writes a Finnish name the way an English speaker says it ("campy", "hacker nemi"). Match
+# what it heard against the real place and street names around the car by how they sound: both
+# sides go through sound_key(), which spells them the same way (c/k, y/i, double letters, ä/a...),
+# then the closest name wins if it's close enough. Names: OpenStreetMap (Overpass API), fetched for
+# the phone's area and cached; until then the bundled Helsinki list (places-helsinki.txt, no streets).
+# Overpass only ever gets a map area, never what the driver said.
+import difflib, unicodedata, zlib, base64 as _b64
+SOUND_RULES = [(r"ph", "f"), (r"th", "t"), (r"sh", "s"), (r"ck", "k"), (r"ch", "k"), (r"c(?=[eiy])", "s"), (r"c", "k"), (r"q", "k"),
+               (r"x", "ks"), (r"ow", "au"), (r"w", "v"), (r"z", "s"), (r"j", "y"), (r"ee|ea|ie", "i"), (r"ou", "u"), (r"ei|ey", "ai"),
+               (r"er\b", "a"), (r"y", "i"), (r"(?<=[^aeiou\s])h", ""), (r"h\b", ""), (r"(.)\1+", r"\1")]
+# Words that are never part of a misheard name: "railway station" mustn't become one particular station.
+COMMON_WORDS = set("""the a an to near me nearest closest station centre center street road mall airport hospital shopping square park
+    harbour harbor port terminal market church museum beach university hotel please my home office work school railway train metro bus
+    tram central city main north south east west old new big little petrol gas parking garage pharmacy shop store supermarket restaurant
+    cafe bar gym library police of in at on for and go take drive get directions route way there here open now""".split())
+PLACES_FILE = DATA / "places.json"
+OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
+PLACES_RADIUS_KM, STREETS_RADIUS_KM = 25, 12
+places = []            # [(name, sound key)]
+
+def sound_key(text):
+    t = "".join(ch for ch in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(ch))
+    t = re.sub(r"[^a-z ]", " ", t)
+    for a, b in SOUND_RULES: t = re.sub(a, b, t)
+    return t.replace(" ", "")
+
+def set_places(names, source):
+    global places
+    places = [(n, sound_key(n)) for n in names if n and "(" not in n]
+    log(f"{len(places)} place names ({source})")
+
+PLACE_PREPOSITIONS = {"to", "near", "in", "at", "from", "around", "by", "past", "via"}
+
+def fix_place(text, in_sentence=False):
+    # -> (text with the misheard name replaced, what was heard, the name) or (text, None, None).
+    # in_sentence: a whole request, not just the destination. Then only words right after "to", "near",
+    # "in"... count, or ordinary words would turn into street names ("weather" -> Viittatie).
+    words, best = text.split(), None
+    for n in range(min(4, len(words)), 0, -1):
+        for i in range(len(words) - n + 1):
+            win = words[i:i + n]
+            if in_sentence and (i == 0 or words[i - 1].lower() not in PLACE_PREPOSITIONS): continue
+            if all(w.lower().strip(".,!?") in COMMON_WORDS for w in win): continue
+            if not (re.search(r"[a-z]", win[0], re.I) and re.search(r"[a-z]", win[-1], re.I)): continue   # keep house numbers
+            k = sound_key(" ".join(win))
+            if len(k) < 3: continue
+            for name, nk in places:
+                if abs(len(nk) - len(k)) > max(3, len(k) // 2): continue
+                r = difflib.SequenceMatcher(None, k, nk).ratio()
+                if r < (0.9 if len(nk) <= 5 else 0.8): continue
+                score = r + 0.05 * n                          # prefer covering more of the words
+                if not best or score > best[0]: best = (score, i, n, name)
+    if not best: return text, None, None
+    _, i, n, name = best
+    heard = " ".join(words[i:i + n])
+    if heard.lower().strip(".,!?") == name.lower(): return text, None, None
+    return " ".join(words[:i] + [name] + words[i + n:]), heard, name
+
+def fetch_places(lat, lon):
+    P, S = PLACES_RADIUS_KM * 1000, STREETS_RADIUS_KM * 1000
+    around = lambda r: f"(around:{r},{lat:.3f},{lon:.3f})"
+    q = (f'[out:csv(name,"name:en";false)][timeout:180];('
+         f'nwr["place"~"^(city|town|village|suburb|quarter|neighbourhood|island|square)$"]["name"]{around(P)};'
+         f'nwr["railway"="station"]["name"]{around(P)};nwr["public_transport"="station"]["name"]{around(P)};'
+         f'nwr["shop"="mall"]["name"]{around(P)};nwr["amenity"~"^(hospital|university|college)$"]["name"]{around(P)};'
+         f'nwr["tourism"~"^(attraction|museum)$"]["name"]{around(P)};nwr["aeroway"="aerodrome"]["name"]{around(P * 2)};'
+         f'way["highway"~"^(trunk|primary|secondary|tertiary|residential|unclassified|pedestrian|living_street)$"]["name"]{around(S)};'
+         f');out tags;')
+    import urllib.parse
+    for url in OVERPASS:
+        try:
+            req = urllib.request.Request(url, data=urllib.parse.urlencode({"data": q}).encode(), headers={"User-Agent": "SafeDrive/1.0"})
+            with urllib.request.urlopen(req, timeout=240) as r: body = r.read().decode("utf-8", "replace")
+            names = sorted({c.strip() for line in body.splitlines() for c in line.split("\t") if c.strip()})
+            if len(names) > 50: return names
+            log(f"place names: {url} sent only {len(names)}")
+        except Exception as e:
+            log(f"place names: {url} failed: {e!r}"[:200])
+    return None
+
+def km(a, b):
+    import math
+    dy = (a[0] - b[0]) * 111.2; dx = (a[1] - b[1]) * 111.2 * math.cos(math.radians(a[0]))
+    return math.hypot(dx, dy)
+
+def places_loop():
+    # Names for where the car is: the cache if it's for this area, otherwise fetch (about 2 min,
+    # 0.5 MB). Checked every 5 min; a failed fetch is retried 10 min later.
+    cache = None
+    try: cache = json.loads(PLACES_FILE.read_text()); set_places(cache["names"], f"cached, {len(cache['names'])} for {cache['center']}")
+    except Exception:
+        if os.environ.get("PLACES_B64"):
+            set_places(zlib.decompress(_b64.b64decode(os.environ["PLACES_B64"])).decode().splitlines(), "bundled Helsinki list")
+    retry_at = 0
+    while True:
+        loc = phone_location()
+        if loc and time.time() >= retry_at:
+            here = (loc["lat"], loc["lon"])
+            if not cache or km(here, cache["center"]) > 10 or time.time() - cache.get("at", 0) > 30 * 86400:
+                log(f"fetching place names around {here[0]:.3f},{here[1]:.3f}...")
+                names = fetch_places(*here)
+                if names:
+                    cache = {"center": [round(here[0], 3), round(here[1], 3)], "at": time.time(), "names": names}
+                    PLACES_FILE.write_text(json.dumps(cache, ensure_ascii=False))
+                    set_places(names, f"fetched for {cache['center']}")
+                else:
+                    retry_at = time.time() + 600
+        time.sleep(300)
+
+# ---------- directions: a "Go to ..." button on the SafeDrive page (dash.py) ----------
+# The car never opens an app on the phone: iOS only allows that from a tap. The page on the phone
+# shows the destination and one big button that opens Google Maps with the route.
+def publish_destination(name, address="", query="", place_id="", by="car", heard=""):
+    d = {"name": name[:80], "address": address[:160], "query": (query or ", ".join(x for x in (name, address) if x))[:200],
+         "place_id": place_id, "by": by, "heard": heard[:80], "at": time.time()}
+    client.publish("car/nav/destination", json.dumps(d), qos=1, retain=True)
+    log("destination for the phone:", d)
+    return d
+
+def directions(s, place):
+    if not place:
+        return say(s, "Where to? Say for example: directions to Kamppi.", "Where to?", "Say: directions to ...", "warn")
+    said = place
+    place, heard, name = fix_place(place)
+    if name: log(f"place name: heard {heard!r}, using {name!r}")
+    # "near me" keeps a vague place ("petrol station") close by when Maps doesn't know where the phone is yet.
+    query = re.sub(r"^(?:the\s+)?(?:nearest|closest)\s+(.+)", r"\1 near me", place, flags=re.I)
+    publish_destination(place[:1].upper() + place[1:], "", query, by="car", heard=said if name else "")
+    say(s, f"Directions to {place} are on your phone. Tap Go when it's safe.", "Directions",
+        f"Tap Go on your phone: {place}", "ok")
+
 # ---------- Gemini: the online co-pilot ----------
 # One agent turn per request: Gemini gets Google Search and Google Maps grounding (with the car's
 # position) plus the car's own functions. It may chain them ("find an open pharmacy and text mom
@@ -461,10 +603,15 @@ GEMINI_FUNCTIONS = [
          "text": {"type": "string"}}, "required": ["to", "text"]}},
     {"name": "set_light", "description": "Turn the car's cabin light on or off.",
      "parameters": {"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}},
+    {"name": "show_directions", "description": "Put a 'Go to <place>' button on the driver's phone (the SafeDrive page in the phone holder); one tap opens Google Maps with the route. Use it when the driver wants to go somewhere or asks for directions, after finding the exact place with Google Maps.",
+     "parameters": {"type": "object", "properties": {
+         "name": {"type": "string", "description": "The place's name as Google Maps lists it"},
+         "address": {"type": "string", "description": "Its street address, with the city"}}, "required": ["name", "address"]}},
     {"name": "cabin_status", "description": "What the in-car camera monitor (NVIDIA Nemotron) saw most recently: danger level, description, number of people, back-seat hand sign.",
      "parameters": {"type": "object", "properties": {}}},
 ]
 last_verdict = {}      # newest Nemotron verdict (watch_loop)
+maps_places = []       # Google Maps places Gemini found in this request: [{"title", "placeId", "uri"}]
 
 def gemini_call(contents, system, loc):
     tool_config = {"includeServerSideToolInvocations": True}
@@ -483,6 +630,16 @@ def run_function(name, args, said=""):
         status("Sending...", f"To {' and '.join(to)}: {args.get('text', '')}", "fg", 45000)
         ok, reason = hub_send(to, str(args.get("text", "")))
         return {"ok": ok, "error": reason} if not ok else {"ok": True, "sent_to": to}
+    if name == "show_directions":
+        place, address = str(args.get("name", "")).strip(), str(args.get("address", "")).strip()
+        if not place: return {"ok": False, "error": "no place name"}
+        # The Maps place ID makes the phone open exactly that place, not a namesake.
+        key = place.lower()
+        hit = next((p for p in maps_places if p.get("title") and (p["title"].lower() in key or key in p["title"].lower())), {})
+        pid = (hit.get("placeId") or "").removeprefix("places/")
+        publish_destination(place, address, by="gemini", place_id=pid)
+        status("Directions", f"Tap Go on your phone: {place}", "ok", 30000)
+        return {"ok": True, "shown_on_phone": place, "note": "The driver taps Go on the phone to open Google Maps. Tell them that."}
     if name == "set_light":
         client.publish("car/atech/light", json.dumps({"on": bool(args.get("on"))}))
         return {"ok": True, "light_on": bool(args.get("on"))}
@@ -503,16 +660,26 @@ def ask_google(s, query):
              " routes: one query like 'pharmacy near me' is enough. Don't use Maps just to find out where the car is, and never"
              " search the web for coordinates." if loc else " The car's position is unknown.")
     system = ("You are the co-pilot voice assistant in a car, talking to the driver. Use Google Search for current facts and "
-              "Google Maps for places, opening hours, distances and routes. Use the car's functions when the driver asks for an "
+              "Google Maps for places, opening hours, distances and routes. When the driver wants to go somewhere, find the place with "
+              "Google Maps, then call show_directions with its name and address. Use the car's functions when the driver asks for an "
               f"action (contacts: {', '.join(CONTACTS) or 'mom, dad'}). Never invent results: if a tool failed, say so. "
+              "The request comes from speech recognition of a driver who isn't a native speaker of the local language: place names may be "
+              "spelled the way they sound in English (\"campy\" for Kamppi); look for the real place nearby that sounds like it. "
               "Your final answer is read aloud while driving: at most three short sentences, plain words, no lists, markdown, links or emoji. "
               f"Now (UTC): {time.strftime('%A %d %B %Y, %H:%M', time.gmtime())}.{where}")
-    contents = [{"role": "user", "parts": [{"text": query}]}]
+    _, heard, name = fix_place(query, in_sentence=True)
+    if name: log(f"place name for Gemini: heard {heard!r}, maybe {name!r}")
+    note = (f"\n(Speech recognition note: \"{heard}\" is probably the local place name \"{name}\".)" if name else "")
+    contents = [{"role": "user", "parts": [{"text": query + note}]}]
+    maps_places.clear()
     t = time.time(); answer = ""
     try:
         for step in range(5):
             res = gemini_call(contents, system, loc)
-            content = (res.get("candidates") or [{}])[0].get("content") or {}
+            cand = (res.get("candidates") or [{}])[0]
+            content = cand.get("content") or {}
+            for ch in (cand.get("groundingMetadata") or {}).get("groundingChunks") or []:
+                if ch.get("maps"): maps_places.append(ch["maps"])
             parts = content.get("parts") or []
             calls = [p["functionCall"] for p in parts if "functionCall" in p]
             for p in parts:
@@ -714,6 +881,7 @@ client.loop_start()
 threading.Thread(target=udp_loop, daemon=True).start()
 threading.Thread(target=prepare_llm, daemon=True).start()
 threading.Thread(target=watch_loop, daemon=True).start()
+threading.Thread(target=places_loop, daemon=True).start()
 load_models()
 models_loaded.set()
 log("voice ready" + ("" if GEMINI_KEY else " (no Gemini key: 'ask Google' is off)"))

@@ -12,7 +12,7 @@ DEVICE = os.environ.get("WENDY_DEVICE", "wendyos-hackathon-device-4.local")
 APPS = {  # folder -> (wendy app name, line that means "up", log lines worth showing)
     "atech-flasher": ("atech-flasher", "mqtt: connected",
                       ("tools ready", "toolchain changed", "built after", "SUCCESS", "+ atech", "FLASH_OK", "wifi:", "mqtt:")),
-    "jetson-hub": ("car-hub", "MQTT connected", ("MQTT connected", "Telegram bot", "waiting for broker", "[vision]")),
+    "jetson-hub": ("car-hub", "MQTT connected", ("MQTT connected", "Telegram bot", "waiting for broker", "[vision]", "[dash]")),
 }
 FAIL = (" failed", "rror:", "Traceback", "No Atech board")
 

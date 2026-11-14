@@ -42,6 +42,7 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 ## SOS button (port 6)
 
 - Hold 2 s: two amber flashes, and the alert goes out to every linked chat at once, with a live location. A photo from the car's camera follows, then a clip from 10 s before to 5 s after the press (see Camera). If the last location is over 1 minute old, the hub asks the phone for a new one and the live location moves there when it arrives. With no location at all, the live location follows as soon as the phone answers (up to 60 s).
+- If the phone hasn't sent a position for over 30 minutes (live location sharing stopped, OwnTracks asleep), SOS, accident and threat alerts still send the last known one, up to 24 h old (`LAST_KNOWN_MAX_AGE`), marked "⚠️ Last known position, 45 min ago: the car may have moved". The incident report says the same. The live location moves as soon as the phone answers. Check-ins still only use positions up to 30 minutes old.
 - Otherwise the light stays off, so the button stays discreet. It never turns red, even when the hub reports a problem (no chats linked, every send failed, or no recent GPS fix). The problem only shows up in the board's log.
 - The white light while it's pressed is built into the V2.0 button, and firmware can't turn it off.
 
@@ -108,5 +109,6 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
 
 - About 10–15 s after the alert (once the clip is ready, so it can come just before or after the video), `hub.py` sends a short plain-text summary from Gemini: what the clip shows inside the cabin, how many people are visible, the street address or nearest landmark, the nearest emergency department (from Google Maps), and one or two sentences to read to `112` (for a threat, it warns not to call the driver first).
 - The message says it is AI-generated and can be wrong, and tells the family to check the clip. It describes only visible movement in the cabin and never diagnoses injuries; if the video is dark, blurry or missing, it says so instead of guessing.
-- Two Gemini calls run in parallel to keep it quick: one asks Google Maps for the address and the nearest emergency department as soon as the alert fires, the other describes the clip as soon as it's ready (JSON, no tools). Thinking is turned off for both.
-- Only when an SOS, accident or threat alert fires do the clip, the alert trigger, the cabin monitor's verdicts from that window and the car's location go to Gemini (and the coordinates to Google Maps).
+- To keep it quick, three lookups run in parallel. As soon as the alert fires, OpenStreetMap (Nominatim) gives the exact street address at the phone's position (about 0.5 s) and Gemini with Google Maps finds the nearest emergency department. The third, a Gemini call with no tools that answers in JSON, describes the clip as soon as it's ready. Thinking is turned off for both Gemini calls. Gemini's own address is used only if OpenStreetMap has none: it names a nearby place, and often a different one each time.
+- The hub log shows which Google Maps calls Gemini made and the places Maps returned (`Maps sources: ...`).
+- Only when an SOS, accident or threat alert fires do the clip, the alert trigger, the cabin monitor's verdicts from that window and the car's location go to Gemini (and the coordinates to Google Maps and OpenStreetMap).

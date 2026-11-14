@@ -24,6 +24,9 @@ MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 BOTS = json.loads(os.environ.get("TELEGRAM_BOTS") or "[]")
 LIVE_PERIOD = int(os.environ.get("LIVE_PERIOD", "900"))      # seconds the live location stays live
 MAX_FIX_AGE = int(os.environ.get("MAX_FIX_AGE", "1800"))     # ignore phone fixes older than this
+# Emergency alerts (SOS, accident, threat) still send an older fix, up to this age, marked as the
+# last known position: an old position is better than none.
+LAST_KNOWN_MAX_AGE = int(os.environ.get("LAST_KNOWN_MAX_AGE", str(24 * 3600)))
 FRESH_FIX_AGE = int(os.environ.get("FRESH_FIX_AGE", "60"))   # older than this: ask the phone for a new one
 FIX_WAIT = float(os.environ.get("FIX_WAIT", "30"))           # check-in: how long a late answer from the phone still counts
 MOVED_M = float(os.environ.get("MOVED_M", "100"))            # check-in: send the late answer only if it's this far off
@@ -89,6 +92,21 @@ def new_fix(f, source):
     threading.Thread(target=update_live, daemon=True).start()
 
 def fix_age(f): return time.time() - f["tst"]
+
+def alert_fix():
+    # For emergency alerts: the recent fix, or else the last known one (up to LAST_KNOWN_MAX_AGE),
+    # marked "stale" so the message can say how old it is.
+    f = recent_fix()
+    if f: return f
+    with lock: f = dict(fix) if fix else None
+    if f and fix_age(f) <= LAST_KNOWN_MAX_AGE:
+        f["stale"] = True
+        return f
+    return None
+
+def age_text(seconds):
+    m = seconds / 60
+    return f"{m:.0f} min" if m < 90 else f"{m / 60:.1f} h".replace(".0 h", " h")
 
 def ask_phone():
     # Ask OwnTracks for a new fix (remote command reportLocation, enabled in the app).
@@ -164,8 +182,12 @@ def gemini(body, timeout=45):
             if attempt == 0 and e.code == 400 and "thinking" in err.lower():
                 body["generationConfig"].pop("thinkingConfig", None); continue   # a model that must think
             raise RuntimeError(f"HTTP {e.code}: {err}") from None
-    parts = ((res.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+    cand = (res.get("candidates") or [{}])[0]
+    parts = (cand.get("content") or {}).get("parts") or []
     tools = [p["toolCall"].get("toolType") or "?" for p in parts if "toolCall" in p]
+    # Proof of grounding for the log: the places Google Maps returned that the answer is based on.
+    places = [c["maps"].get("title") for c in (cand.get("groundingMetadata") or {}).get("groundingChunks") or [] if c.get("maps")]
+    if places: tools.append(f"Maps sources: {'; '.join(t for t in places[:5] if t)}")
     text = "".join(p.get("text", "") for p in parts if "text" in p and not p.get("thought")).strip()
     return re.sub(r"[*_#`]|\[\d+\]", "", text).strip(), tools
 
@@ -181,12 +203,31 @@ def where_and_er(loc):
     text, tools = gemini({"systemInstruction": {"parts": [{"text": MAPS_SYSTEM}]},
                           "contents": [{"role": "user", "parts": [{"text": "Where is the car, and which emergency department is nearest?"}]}],
                           "tools": [{"google_maps": {}}],
-                          "toolConfig": {"retrievalConfig": {"latLng": {"latitude": loc["lat"], "longitude": loc["lon"]}}}})
+                          "toolConfig": {"includeServerSideToolInvocations": True,   # so the log shows the Maps calls
+                                         "retrievalConfig": {"latLng": {"latitude": loc["lat"], "longitude": loc["lon"]}}}})
     line = lambda k: (re.search(rf"^{k}:\s*(.+)$", text, re.M | re.I) or [None, ""])[1].strip()
     where, er = line("WHERE"), line("ER")
     unknown = lambda v: not v or v.lower().startswith("unknown")
     log(f"report: Maps answered in {time.time() - t:.1f}s (tools: {', '.join(tools) or 'none'}): {where!r} / {er!r}")
     return {"where": None if unknown(where) else where, "er": None if unknown(er) else er}
+
+def street_address(loc):
+    # The exact address at the phone's position, from OpenStreetMap (Nominatim, no key, ~0.5 s).
+    # Gemini + Maps names a nearby place instead, and a different one from run to run, which is
+    # wrong for a sentence read to the emergency operator. Only the coordinates are sent.
+    t = time.time()
+    q = urllib.parse.urlencode({"format": "jsonv2", "lat": f"{loc['lat']:.6f}", "lon": f"{loc['lon']:.6f}",
+                                "zoom": 18, "addressdetails": 1, "accept-language": "en"})
+    req = urllib.request.Request(f"https://nominatim.openstreetmap.org/reverse?{q}", headers={"User-Agent": "SafeDrive/1.0 (car safety demo)"})
+    with urllib.request.urlopen(req, timeout=8) as r: d = json.load(r)
+    a = d.get("address") or {}
+    street = " ".join(x for x in (a.get("road") or a.get("pedestrian") or a.get("footway") or a.get("path"), a.get("house_number")) if x)
+    town = " ".join(x for x in (a.get("postcode"), a.get("city") or a.get("town") or a.get("village") or a.get("municipality")) if x)
+    addr = ", ".join(x for x in (street, town) if x)
+    name = d.get("name") or ""
+    if name and addr and name not in addr: addr += f" ({name})"
+    log(f"report: address from OpenStreetMap in {time.time() - t:.1f}s: {addr!r}")
+    return addr or None
 
 CLIP_SYSTEM = """You describe a short clip from a camera INSIDE a car, sent after an emergency alert, for the driver's family.
 - The camera sees the people in the car, not the road. Never describe the road, other cars or the cause of a crash unless it's clearly visible through a window.
@@ -229,12 +270,14 @@ def send_report(label, targets, clip, detail, start, end, event_at, vlist, t0, l
     try:
         if not GEMINI_KEY: raise RuntimeError("no GEMINI_API_KEY")
         c = describe_clip(label, clip, detail, start, end, event_at, vlist)
-        if maps_thread: maps_thread.join(max(0, 45 - (time.time() - t0)))
-        where, er = maps_box.get("where"), maps_box.get("er")
+        for th in maps_thread or []: th.join(max(0, 45 - (time.time() - t0)))
+        where, er = maps_box.get("address") or maps_box.get("where"), maps_box.get("er")
         coords = f"{loc['lat']:.5f}, {loc['lon']:.5f}" if loc else None
-        place = where or (f"near {coords} (no address from Google Maps)" if coords else "unknown (no recent GPS fix from the phone)")
+        place = where or (f"near {coords} (no address from Google Maps)" if coords else "unknown (no GPS fix from the phone)")
+        stale = f"last known position, {age_text(fix_age(loc))} old" if loc and loc.get("stale") else ""
+        if stale: place += f" ({stale}: the car may have moved)"
         said = c["dispatcher"].rstrip(". ") + "."
-        if where or coords: said += f" Location: {where or coords}."
+        if where or coords: said += f" {'Last known location' if stale else 'Location'}: {where or coords}."
         call = f'If you call {EMERGENCY_NUMBER}, say: "{said}"'
         if label == "threat": call = "Don't call the driver. " + call
         report = "\n".join(["📋 AI incident report (Gemini, can be wrong: check the clip)",
@@ -269,22 +312,34 @@ def send_media(label, targets, start, end, detail=None, event_at=None):
         with ThreadPoolExecutor(max_workers=len(targets)) as pool: list(pool.map(one, targets))
     t0 = time.time()
     try:
-        loc, maps_box, maps_thread = recent_fix(), {}, None
+        loc, maps_box, maps_thread = alert_fix(), {}, []
         if GEMINI_KEY and loc:
+            # The address (OpenStreetMap, exact) and the nearest emergency department (Gemini + Google Maps)
+            # in parallel; Gemini's own "where" is only used if OpenStreetMap has no address.
             def run_maps():
                 try: maps_box.update(where_and_er(loc))
                 except Exception as e: log(f"{label} report: Maps lookup failed:", e)
-            maps_thread = threading.Thread(target=run_maps, daemon=True); maps_thread.start()
-        clip_box = [None, []]
+            def run_address():
+                try: maps_box["address"] = street_address(loc)
+                except Exception as e: log(f"{label} report: OpenStreetMap address failed:", e)
+            maps_thread = [threading.Thread(target=fn, daemon=True) for fn in (run_maps, run_address)]
+            for th in maps_thread: th.start()
+        clip_box = [None, None]
         def grab_clip():
+            # Fetch the clip, then start the report at once: it must not wait for the photo upload,
+            # which can take 10 s or more over the hotspot.
             try:
                 clip_box[0] = fetch(f"/clip.mp4?start={start:.3f}&end={end:.3f}", max(end - time.time(), 0) + 90)
+                log(f"{label} clip ready ({len(clip_box[0]) // 1024} KB) after {time.time() - t0:.1f}s")
             except Exception as e:
                 log(f"{label} clip unavailable:", e)
             with lock:
                 now = time.time()
                 while verdicts and now - verdicts[0]["captured_at"] > VERDICT_WINDOW: verdicts.popleft()
-                clip_box[1] = [v for v in verdicts if start <= v["captured_at"] <= end]
+                vlist = [v for v in verdicts if start <= v["captured_at"] <= end]
+            clip_box[1] = threading.Thread(target=send_report, daemon=True, args=(
+                label, targets, clip_box[0], detail, start, end, event_at, vlist, t0, loc, maps_thread, maps_box))
+            clip_box[1].start()
         ct = threading.Thread(target=grab_clip, daemon=True); ct.start()
         try:
             photo = fetch("/photo.jpg", 5)
@@ -294,17 +349,13 @@ def send_media(label, targets, start, end, detail=None, event_at=None):
         except Exception as e:
             log(f"{label} photo unavailable:", e)
         ct.join()
-        clip, vlist = clip_box
-        vt = None
+        clip, report_thread = clip_box
         if clip:
-            def send_clip():
-                to_all("sendVideo", "video", "car.mp4", clip, "video/mp4", supports_streaming="true",
-                       caption=f"🎥 In the car, {time.strftime('%H:%M:%S', time.localtime(start))}"
-                               f"–{time.strftime('%H:%M:%S', time.localtime(end))}")
-                log(f"{label} clip sent ({len(clip) // 1024} KB) after {time.time() - t0:.1f}s")
-            vt = threading.Thread(target=send_clip, daemon=True); vt.start()
-        send_report(label, targets, clip, detail, start, end, event_at, vlist, t0, loc, maps_thread, maps_box)
-        if vt: vt.join()
+            to_all("sendVideo", "video", "car.mp4", clip, "video/mp4", supports_streaming="true",
+                   caption=f"🎥 In the car, {time.strftime('%H:%M:%S', time.localtime(start))}"
+                           f"–{time.strftime('%H:%M:%S', time.localtime(end))}")
+            log(f"{label} clip sent ({len(clip) // 1024} KB) after {time.time() - t0:.1f}s")
+        if report_thread: report_thread.join()
     finally:
         log(f"{label} media done after {time.time() - t0:.1f}s")   # tools/deploy.py waits for this line
 
@@ -323,11 +374,16 @@ def send_alert(label, head, tail, reply_topic, media=None, detail=None, event_at
     try:
         targets = recipients()
         if not targets: raise RuntimeError("no Telegram chats linked yet: send any message to the bots")
-        f = recent_fix()
+        f = alert_fix()
         asked = (not f or fix_age(f) > FRESH_FIX_AGE) and ask_phone()
         if f:
             maps = f"https://maps.google.com/?q={f['lat']:.6f},{f['lon']:.6f}"
-            when = f"Last known position, {fix_age(f) / 60:.0f} min ago. " if fix_age(f) > FRESH_FIX_AGE else ""
+            if f.get("stale"):
+                when = (f"⚠️ Last known position, {age_text(fix_age(f))} ago: the phone hasn't sent a newer one, so the car "
+                        "may have moved. The live location below moves as soon as the phone answers.\n")
+                log(f"{label}: no recent fix, using the last known one ({age_text(fix_age(f))} old)")
+            else:
+                when = f"Last known position, {age_text(fix_age(f))} ago. " if fix_age(f) > FRESH_FIX_AGE else ""
             text = head + f"{when}Live location below (updates for {LIVE_PERIOD // 60} min).\n{maps}"
         elif asked:
             text = head + "📍 Getting the location from the phone..."

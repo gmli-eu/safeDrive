@@ -1,0 +1,153 @@
+name: atech_car
+board: 14port
+libraries:
+  - knolleary/PubSubClient@^2.8
+modules:
+  - {id: button,   instance: lightbtn, port: 3}   # tap: toggle the light grid
+  - {id: button,   instance: sosbtn,   port: 6}   # hold 2 s: Telegram live location
+  - {id: neopixel, instance: grid,     port: 7}
+code:
+  globals: |
+    #include <WiFi.h>
+    #include <PubSubClient.h>
+
+    static const char* WIFI_SSID = "@WIFI_SSID@";   // filled in from secrets.json by make_compose.py
+    static const char* WIFI_PASS = "@WIFI_PASS@";
+    static const char* MQTT_HOST = "172.20.10.2";   // the Jetson
+    static const uint16_t MQTT_PORT = 1883;
+    static const unsigned long LONG_PRESS_MS = 2000;
+
+    WiFiClient netClient;
+    PubSubClient mqtt(netClient);
+    bool lightOn = false;
+    String scanReport;
+    unsigned long sosColorUntil = 0;
+    unsigned long sosFlashAt = 0;   // quick amber double flash when the long press fires
+
+    void logLine(const char* raw) {
+      // keep the JSON line valid: printable ASCII only, no quotes/backslashes
+      static char msg[400]; size_t j = 0;
+      for (size_t i = 0; raw[i] && j < sizeof(msg) - 1; i++) {
+        char c = raw[i];
+        msg[j++] = (c >= 32 && c <= 126 && c != '"' && c != '\\') ? c : '?';
+      }
+      msg[j] = 0;
+      Serial.printf("{\"type\":\"event\",\"payload\":{\"event_type\":\"log\",\"key\":\"car\",\"value\":\"%s\"}}\n", msg);
+    }
+
+    void publishJson(const char* topic, const char* json) {
+      if (mqtt.connected()) mqtt.publish(topic, json);
+    }
+
+    void setLight(bool on) {
+      lightOn = on;
+      if (on) grid.setAll(255, 255, 255); else grid.clear();
+      grid.show();
+      if (mqtt.connected()) mqtt.publish("car/atech/light/state", on ? "{\"on\":true}" : "{\"on\":false}", true);
+    }
+
+    // Commands from the hub: car/atech/light  {"on":true|false} or "toggle"
+    //                        car/atech/notify {"status":"sent"|"error"}
+    void onMqtt(char* topic, byte* payload, unsigned int len) {
+      String t(topic), p;
+      for (unsigned int i = 0; i < len; i++) p += (char)payload[i];
+      if (t == "car/atech/light") {
+        if (p.indexOf("toggle") >= 0) setLight(!lightOn);
+        else setLight(p.indexOf("true") >= 0);
+      } else if (t == "car/atech/notify") {
+        // "sent": no light (the amber flash at fire time is the only signal).
+        // "error": red for 3 s, so a failed alert is noticed.
+        if (p.indexOf("sent") < 0) {
+          sosbtn.setColor(255, 0, 0);
+          sosColorUntil = millis() + 3000;
+          sosFlashAt = 0;
+        }
+      }
+    }
+
+    void keepConnected() {
+      static unsigned long lastTry = 0;
+      if (WiFi.status() != WL_CONNECTED) {
+        if (millis() - lastTry > 15000) {
+          lastTry = millis();
+          char buf[64]; snprintf(buf, sizeof buf, "wifi: retry, last status=%d", (int)WiFi.status());
+          logLine(buf);
+          String sr = "wifi scan: " + scanReport;
+          logLine(sr.c_str());
+          WiFi.disconnect(); WiFi.begin(WIFI_SSID, WIFI_PASS);
+        }
+        return;
+      }
+      static bool wifiLogged = false;
+      if (!wifiLogged) { wifiLogged = true; char b[64]; snprintf(b, sizeof b, "wifi: connected ip=%s", WiFi.localIP().toString().c_str()); logLine(b); }
+      if (!mqtt.connected() && millis() - lastTry > 3000) {
+        lastTry = millis();
+        if (mqtt.connect("atech-car", "car/atech/status", 1, true, "{\"online\":false}")) {
+          mqtt.publish("car/atech/status", "{\"online\":true}", true);
+          mqtt.subscribe("car/atech/light");
+          mqtt.subscribe("car/atech/notify");
+          logLine("mqtt: connected");
+        } else {
+          logLine("mqtt: connect failed");
+        }
+      }
+      mqtt.loop();
+    }
+  setup: |
+    WiFi.mode(WIFI_STA);
+    // Diagnostics: list visible networks once at boot (ESP32-S3 sees 2.4 GHz only)
+    int n = WiFi.scanNetworks();
+    scanReport = "";
+    for (int i = 0; i < n && i < 12; i++) {
+      char buf[64];
+      snprintf(buf, sizeof buf, "%s(rssi=%d ch=%d auth=%d) ", WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i), (int)WiFi.encryptionType(i));
+      scanReport += buf;
+    }
+    if (n <= 0) scanReport = "no networks found";
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    mqtt.setCallback(onMqtt);
+    mqtt.setSocketTimeout(2);
+    grid.clear(); grid.show();
+  loop: |
+    keepConnected();
+
+    // Scenario 1: tap the port 3 button -> toggle the light (locally, instant)
+    if (lightbtn.wasPressed()) {
+      setLight(!lightOn);
+      publishJson("car/atech/button", "{\"id\":\"light\",\"port\":3,\"action\":\"press\"}");
+    }
+
+    // Scenario 2: hold the port 6 button for 2 s -> long_press event to the hub.
+    // Light: two amber flashes when it fires, red for 3 s if the hub reports an error.
+    // (The white light while pressed is built into the V2.0 button; firmware can't turn it off.)
+    static unsigned long sosDownAt = 0;
+    static bool sosFired = false;
+    bool sosDown = sosbtn.isPressed();
+    if (sosDown && sosDownAt == 0) { sosDownAt = millis(); sosFired = false; }
+    if (!sosDown) { sosDownAt = 0; }
+    if (sosDown && !sosFired) {
+      unsigned long held = millis() - sosDownAt;
+      if (held >= LONG_PRESS_MS) {
+        sosFired = true;
+        publishJson("car/atech/button", "{\"id\":\"sos\",\"port\":6,\"action\":\"long_press\",\"held_ms\":2000}");
+        sosFlashAt = millis();
+        logLine("sos: long press");
+      }
+    } else if (!sosDown && !sosFired && sosColorUntil == 0) {
+      sosbtn.off();
+    }
+    if (sosColorUntil && millis() > sosColorUntil) { sosColorUntil = 0; sosbtn.off(); }
+
+    // Fired: two quick amber flashes (120 ms on/off) so the driver knows they can let go.
+    if (sosFlashAt) {
+      unsigned long e = millis() - sosFlashAt;
+      static int lastPhase = -1;
+      int phase = e < 120 ? 0 : e < 240 ? 1 : e < 360 ? 2 : 3;
+      if (phase != lastPhase) {
+        lastPhase = phase;
+        if (phase == 0 || phase == 2) sosbtn.setColor(255, 120, 0); else sosbtn.off();
+      }
+      if (phase == 3) { sosFlashAt = 0; lastPhase = -1; }
+    }
+

@@ -499,8 +499,9 @@ def ask_google(s, query):
     status("Asking Google", query, "fg", 45000)
     say(s, "One moment.", "Asking Google", query, "fg")      # a tool chain can take a while: no silent wait
     loc = phone_location()
-    where = (" Google Maps already knows the car's position: for anything near 'here' or 'me', query Maps directly"
-             " (e.g. 'pharmacy near me'); never search the web for coordinates." if loc else " The car's position is unknown.")
+    where = (" Google Maps already knows the car's position. Use Maps only when the driver asks about places, distances or"
+             " routes: one query like 'pharmacy near me' is enough. Don't use Maps just to find out where the car is, and never"
+             " search the web for coordinates." if loc else " The car's position is unknown.")
     system = ("You are the co-pilot voice assistant in a car, talking to the driver. Use Google Search for current facts and "
               "Google Maps for places, opening hours, distances and routes. Use the car's functions when the driver asks for an "
               f"action (contacts: {', '.join(CONTACTS) or 'mom, dad'}). Never invent results: if a tool failed, say so. "

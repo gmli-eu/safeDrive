@@ -89,6 +89,7 @@ All numbers below were measured on the hardware during Junction 2026 (14 Novembe
 
 - **On-device person detection (YOLOX-nano on Arduino UNO Q)**: ~0.5 s per frame (~1 Hz detection rate), ~180 MB RAM usage, completely offline while the camera keeps streaming; slows the cloud watch to 1 check every 15 s after 10 s of an empty cabin.
 - **Camera and climate node (Arduino UNO Q)**: streams 800×600 MJPEG at 10 fps while also running the person detector and reading the Modulino Thermo; a hot-cabin warning is spoken 30 s after the Thermo crosses 35 °C. `deploy.py unoq-camera` updates the board and checks frames, the Thermo and the people count in ~5 s (~1 min more when `thermo.ino` is rebuilt and flashed on the board).
+- **Recovery after a power cut**: unplugged and plugged back in, the UNO Q brought everything back by itself, with no one touching it: camera stream, Modulino Thermo, sketch and LED matrix, then the Edge Impulse detector about a minute later. The Jetson and both Atech boards kept running and picked it up again. Ready about 2-3 minutes after power-on.
 - **Voice command understanding (Gemma 4 E2B on Jetson, offline)**: 1.7–2.0 s.
 - **Two-way regional translation (Gemini)**: 2.7–3.5 s per turn.
 - **"Ask Google" agent with web search (Gemini)**: ~10 s.

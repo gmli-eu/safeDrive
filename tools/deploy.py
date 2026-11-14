@@ -4,6 +4,8 @@
 #   python3 tools/deploy.py unoq-camera       (copies the camera streamer to the Uno Q over SSH, and flashes
 #                                              the Thermo sketch to its microcontroller when the sketch changed,
 #                                              and starts the on-device person detector)
+# unoq-camera and jetson-hub first check their web page (PAGE in stream.py / dash.py): UTF-8 and
+# a JavaScript syntax check with node. A broken page stops the deploy.
 # jetson-hub refuses to deploy while an SOS/accident/threat alert is still being sent: a restart
 # kills the photo/clip upload. --check only runs that check; --force deploys anyway.
 import re
@@ -21,6 +23,37 @@ FAIL = (" failed", "rror:", "Traceback", "No Atech board", "can't tell the board
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 folder = args[0].strip("/").split("/")[-1]
+
+# Web pages embedded as a PAGE string (the Uno Q's live view, the safeDrive page): check them before
+# deploying. A JavaScript syntax error stops the whole page script (once a badge stayed on
+# "starting..."), and an escape Python turns into an invalid character crashes every page load.
+PAGES = {"unoq-camera": ["stream.py"], "jetson-hub": ["dash.py"]}
+
+def check_pages(folder):
+    import ast, tempfile
+    node = shutil.which("node")
+    if not node: print("page check: node not found, JavaScript not checked", flush=True)
+    for name in PAGES.get(folder, []):
+        path = pathlib.Path(__file__).resolve().parent.parent / folder / name
+        page = None
+        for n in ast.walk(ast.parse(path.read_text())):
+            if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "PAGE" for t in n.targets):
+                v = n.value.func.value if isinstance(n.value, ast.Call) else n.value   # PAGE = """...""".encode() or """..."""
+                page = ast.literal_eval(v)
+        if page is None: sys.exit(f"page check: no PAGE in {folder}/{name}")
+        try: page.encode()
+        except UnicodeEncodeError as e: sys.exit(f"page check: {folder}/{name} PAGE can't be sent as UTF-8 ({e}): "
+                                                 "write emoji as the character or \\U0001F321, not as \\ud83c\\udf21")
+        if not node: continue
+        js = "\n".join(re.findall(r"<script>(.*?)</script>", page, re.S))
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f: f.write(js)
+        r = subprocess.run([node, "--check", f.name], capture_output=True, text=True)
+        os.unlink(f.name)
+        if r.returncode:
+            sys.exit(f"page check: JavaScript error in {folder}/{name} PAGE:\n" + r.stderr.strip()[-800:])
+        print(f"page check: {folder}/{name} ok", flush=True)
+
+check_pages(folder)
 if folder == "unoq-camera":   # not a Wendy app: copied to the Uno Q over SSH, runs as a systemd service
     import io, tarfile
     root = pathlib.Path(__file__).resolve().parent.parent / folder

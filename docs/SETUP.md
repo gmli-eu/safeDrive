@@ -17,7 +17,7 @@ iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.p
 | `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker; `hub.py`: Telegram alerts, location, incident report; `voice.py`: voice assistant, translator, cabin watch; `vision.py`: camera buffer and clips; `dash.py`: the safeDrive page for the driver's phone |
 | `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware for both boards (`project.yaml`: driver, `passenger.yaml`: back seat), flashes each over USB, then streams their output |
 | `unoq-camera/`   | Arduino UNO Q (systemd service + sketch) | `stream.py`: serves the USB camera, the cabin climate (`/climate`) and the on-device people count (`/occupancy`) over HTTP on port 8090; `thermo/thermo.ino`: on the microcontroller, reads the Modulino Thermo and drives the LED matrix |
-| `tools/`         | dev machine                        | `deploy.py` deploys an app and waits until it's up; `mqtt_peek.py` watches the broker |
+| `tools/`         | dev machine                        | `deploy.py` checks an app's web page, deploys the app and waits until it's up; `mqtt_peek.py` watches the broker |
 
 ## Setup
 
@@ -40,6 +40,8 @@ python3 tools/deploy.py unoq-camera     # ~5 s: copy stream.py to the Uno Q over
                                         # (~1 min more when thermo.ino changed: built and flashed on the Uno Q)
 ```
 
+Before deploying `unoq-camera` or `jetson-hub`, `deploy.py` checks their web pages (the `PAGE` in `stream.py` and `dash.py`): the page must encode as UTF-8, and its JavaScript must pass `node --check`. Otherwise it stops without deploying and shows the error. Without `node`, only the encoding is checked.
+
 `deploy.py jetson-hub` first checks the hub log and refuses to deploy while an SOS, accident or threat alert from the last 2 minutes hasn't finished sending its clip and incident report, because a restart would drop them. `--check` runs only that check; `--force` deploys anyway.
 
 `deploy.py` runs the app's `make_compose.py`, which generates `compose.yml` with the code and secrets embedded. Then it runs `wendy run --detach` and follows the logs until the app is up. The device defaults to `wendyos-hackathon-device-4.local`; set `WENDY_DEVICE` to override it. Each run's `compose.yml` is generated and holds secrets, so it isn't committed.
@@ -59,6 +61,7 @@ The first start of `jetson-hub` downloads about 8 GB (Ollama image, Gemma, Whisp
 - The camera goes into a powered USB-C hub on the Uno Q's only USB-C port. The Uno Q joins the hotspot by itself and serves the camera at `http://172.20.10.4:8090/`.
 - Resolution and frame rate: `WIDTH`, `HEIGHT` and `FPS` in `unoq-camera/safedrive-camera.service` (set to 800×600 at 10 fps: 1280×720 at 15 fps took so much of the 2.4 GHz hotspot that the speaker's audio stuttered).
 - Logs: `journalctl -u safedrive-camera` on the Uno Q.
+- **After power-on**, everything starts by itself (tested by unplugging the board): the camera is back on the Jetson about 1 minute after the Uno Q rejoins the hotspot, the Thermo a few seconds later, and the person detector about a minute after that. Meanwhile the LED matrix shows "?" with the cloud icon (it can't tell yet, so the cloud watch keeps its full rate). Give it 2-3 minutes before a demo. The camera may come back under another `/dev/video` number; the streamer finds it by name.
 
 ## Cabin climate (Modulino Thermo)
 

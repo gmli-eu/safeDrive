@@ -259,8 +259,10 @@ def on_message(c, userdata, m):
 # ---------- Telegram: link chats, answer /where ----------
 def telegram_loop(bot):
     name, token = bot["name"], bot["token"]
-    try: log(f"Telegram bot {name}: @" + tg(token, "getMe")["username"])
-    except Exception as e: log(f"Telegram bot {name} token problem:", e); return
+    while True:  # the hub can start before the Jetson has internet: keep trying until Telegram answers
+        try: log(f"Telegram bot {name}: @" + tg(token, "getMe")["username"]); break
+        except OSError as e: log(f"Telegram bot {name}: no internet yet, retrying:", e); time.sleep(10)
+        except Exception as e: log(f"Telegram bot {name} token problem:", e); return
     offset = None
     while True:
         try:

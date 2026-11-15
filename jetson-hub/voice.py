@@ -1432,6 +1432,36 @@ def watch_phone(p, verdict):
     log("phone: the driver is using a phone, asking them to put it down")
     return speak_aside(PHONE_SAY, "Phone down", color="warn")
 
+# Watch health: when Nemotron stops answering (a rejected key, no internet, a down endpoint) the
+# car can't see closed eyes or a threat, so it says so out loud instead of failing silently.
+# Retained on car/vision/watch: {"ok": bool, "reason": str, "since": t}. Spoken with Piper, on the Jetson.
+WATCH_DOWN_AFTER = 3          # failed requests in a row (about 45 s at one retry per 15 s)
+WATCH_DOWN_REMIND_S = 600     # repeat the warning this often while it stays down
+WATCH_DOWN_SAY = "Driver monitoring is offline. I can't watch for drowsiness right now."
+WATCH_UP_SAY = "Driver monitoring is back on."
+
+def watch_failed(w, e):
+    w["fails"] += 1
+    why = (f"Nemotron key rejected (HTTP {e.code}): get a new VERDA_INFERENCE_KEY"
+           if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403) else
+           f"HTTP {e.code}" if isinstance(e, urllib.error.HTTPError) else repr(e)[:120])
+    log(f"Nemotron watch error ({w['fails']} in a row), retrying in 15 s:", why)
+    if w["fails"] < WATCH_DOWN_AFTER: return
+    if not w["down"]:
+        w.update(down=True, said_at=0.0)
+        log("cabin watch offline: telling the driver")
+        client.publish("car/vision/watch", json.dumps({"ok": False, "reason": why, "since": round(time.time(), 2)}), qos=1, retain=True)
+    if time.time() - w["said_at"] >= WATCH_DOWN_REMIND_S and speak_aside(WATCH_DOWN_SAY, "Watch offline", color="warn"):
+        w["said_at"] = time.time()
+
+def watch_answered(w):
+    was_down, w["fails"] = w["down"], 0
+    if not was_down: return
+    w["down"] = False
+    log("cabin watch back online")
+    client.publish("car/vision/watch", json.dumps({"ok": True, "since": round(time.time(), 2)}), qos=1, retain=True)
+    if w["said_at"]: speak_aside(WATCH_UP_SAY, "Watch back on", color="ok")
+
 def watch_loop():
     import base64
     if not VERDA_KEY:
@@ -1440,6 +1470,8 @@ def watch_loop():
     eyes = {"since": None, "last": 0.0, "warned": 0, "alerted": False}   # the current eyes-closed episode
     phone = {"recent": collections.deque(maxlen=3), "said_at": 0.0}
     last_ask, was_empty, was_paused = 0.0, False, False
+    health = {"fails": 0, "down": False, "said_at": 0.0}
+    client.publish("car/vision/watch", json.dumps({"ok": True, "since": round(time.time(), 2)}), qos=1, retain=True)
     while True:
         try:
             while True:   # quiet while the car speaks, paced, and slow while the Uno Q sees an empty cabin
@@ -1468,6 +1500,7 @@ def watch_loop():
             text = nemotron([{"type": "text", "text": WATCH_PROMPT + "\n\n" + intro},
                              *({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(f).decode()}} for f in frames)],
                             schema=WATCH_SCHEMA)
+            watch_answered(health)
             m = re.search(r"\{.*\}", text, re.S)
             v = json.loads(m.group(0)) if m else {"level": "none", "what": "", "people": 0}
             level = v.get("level") if v.get("level") in ("none", "watch", "danger") else "none"
@@ -1499,7 +1532,9 @@ def watch_loop():
                     spoken_gesture = gesture
             if (gesture != spoken_gesture if slow else spoken_gesture not in recent_gestures): spoken_gesture = None
         except Exception as e:
-            log("Nemotron watch error, retrying in 15 s:", repr(e)); time.sleep(15)
+            try: watch_failed(health, e)
+            except Exception as e2: log("cabin watch health error:", repr(e2))
+            time.sleep(15)
 
 client.on_connect = on_connect
 client.on_message = on_message

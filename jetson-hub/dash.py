@@ -27,16 +27,17 @@ import paho.mqtt.client as mqtt
 MQTT_HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DASH_PORT", "8092"))
 TOPICS = {"car/nav/destination": "destination", "car/vision/camera": "camera",   # retained, so a new page gets them at once
+          "car/vision/watch": "watch",   # retained: is Nemotron answering? (voice.py)
           "car/cabin/climate": "climate", "car/cabin/comfort": "comfort",
           "car/cabin/occupancy": "occupancy"}   # not retained: every 2 s from the hub
 
-NEMO_TOPICS = ("car/vision/nemotron", "car/vision/said", "car/vision/camera")   # voice.py's cabin watch
+NEMO_TOPICS = ("car/vision/nemotron", "car/vision/said", "car/vision/camera", "car/vision/watch")   # voice.py's cabin watch
 
 def log(*a): print(time.strftime("%H:%M:%S"), "[dash]", *a, flush=True)
 
-nemo = {"recent": collections.deque(maxlen=60), "camera": None}   # newest verdicts, for GET /nemotron
+nemo = {"recent": collections.deque(maxlen=60), "camera": None, "watch": None}   # newest verdicts, for GET /nemotron
 
-state = {"destination": None, "camera": None, "climate": None, "comfort": None, "occupancy": None}
+state = {"destination": None, "camera": None, "watch": None, "climate": None, "comfort": None, "occupancy": None}
 version = 0
 changed = threading.Condition()
 
@@ -60,6 +61,7 @@ def nemo_message(topic, data):
     if not isinstance(data, dict): return
     with changed:
         if topic == "car/vision/camera": nemo["camera"] = data.get("state")
+        elif topic == "car/vision/watch": nemo["watch"] = data
         elif topic == "car/vision/nemotron":
             r = nemo["recent"]
             if not (r and r[-1].get("captured_at") == data.get("captured_at")):   # the retained copy after a reconnect
@@ -69,11 +71,11 @@ def nemo_message(topic, data):
                 if v.get("captured_at") == data.get("captured_at"): v["said"] = data.get("text"); break
 
 def nemo_json():
-    with changed: recent, cam = [dict(v) for v in nemo["recent"]], nemo["camera"]
+    with changed: recent, cam, watch = [dict(v) for v in nemo["recent"]], nemo["camera"], nemo["watch"]
     now = time.time()
     minute = [v for v in recent if now - v["at"] < 60]
     took = sorted(v.get("took_s") or 0 for v in minute)
-    return {"now": now, "camera": cam, "model": (recent[-1].get("model") if recent else None),
+    return {"now": now, "camera": cam, "watch": watch, "model": (recent[-1].get("model") if recent else None),
             "per_min": len(minute), "median_s": took[len(took) // 2] if took else None,
             "recent": recent[-8:][::-1]}   # newest first
 
@@ -128,6 +130,7 @@ PAGE = """<!doctype html>
     <a class="alt" id="waze" href="#">Open in Waze instead</a>
   </section>
 </main>
+<p class="hint" id="watch"></p>
 <p class="hint" id="camera"></p>
 <p class="hint">Keep the screen on: Settings \u2192 Display &amp; Brightness \u2192 Auto-Lock \u2192 Never</p>
 <script>
@@ -173,6 +176,8 @@ function render() {
   bEl.hidden = !(cOk && (k === "hot" || k === "cold"));
   if (!bEl.hidden) bEl.innerHTML = "<b>Too " + k + " inside, " + Math.round(c.celsius) + " \u00b0C.</b> Turn on the "
     + (k === "hot" ? "AC" : "heating") + ".";
+  var w = state.watch;
+  document.getElementById("watch").textContent = w && w.ok === false ? "\u26a0\ufe0f Driver monitoring is offline: Nemotron isn't answering" : "";
   var cam = state.camera && state.camera.state;
   document.getElementById("camera").textContent = cam === "ok" ? "" : cam === "dark" ? "Cabin camera can't see (dark or covered)" : cam === "off" ? "Cabin camera is off" : "";
 }

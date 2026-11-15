@@ -67,12 +67,13 @@ fix_arrived = threading.Event()   # set on every new phone fix (see wait_for_fix
 verdicts = collections.deque(maxlen=200)   # recent car/vision/nemotron dicts (last VERDICT_WINDOW s)
 climate = {}          # newest cabin reading: dict(celsius, humidity, at)
 occupancy = {}        # newest on-device person count: dict(people, empty_for_s, at)
-nemotron_io = {"sent": 0.0, "answered": 0.0}   # when voice.py last sent frames to Nemotron / got a verdict
+nemotron_io = {"sent": 0.0, "answered": 0.0, "down": False}   # when voice.py last sent frames to Nemotron / got a verdict
 
 def cloud_active():
     # Frames are going to Nemotron: one was sent in the last 5 s, or a request is still waiting for
     # its answer. Shown on the UNO Q's LED matrix (cloud icon) and in green on the pages.
     now, io = time.time(), nemotron_io
+    if io["down"]: return False
     return now - io["sent"] < 5 or (io["sent"] > io["answered"] and now - io["sent"] < 300)
 
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
@@ -708,6 +709,11 @@ def on_message(c, userdata, m):
     if m.topic.startswith(("car/atech/voice/", "car/passenger/voice/")) or m.topic == "car/voice/send/result": return
     if m.topic == "car/vision/sending":
         nemotron_io["sent"] = time.time(); return
+    if m.topic == "car/vision/watch":
+        # Nemotron is failing (voice.py): its requests get no verdict, so don't show frames as going to the cloud
+        try: nemotron_io["down"] = json.loads(m.payload.decode()).get("ok") is False
+        except Exception: pass
+        return
     if m.topic == "car/vision/nemotron":
         nemotron_io["answered"] = time.time()
         try:

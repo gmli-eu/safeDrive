@@ -5,8 +5,8 @@ How safeDrive is built, and how to set it up and deploy it to the hardware. What
 ## Architecture
 
 ```
-Atech driver board ─────┐  Wi-Fi: MQTT + UDP audio                     ┌─> Telegram (alerts, messages, check-ins)
-Atech back-seat board ──┼──────────────────────> Jetson Orin Nano ─HTTPS─┼─> Gemini API (agent, translator, incident report)
+Atech driver board ─────┐  Wi-Fi: MQTT + UDP audio                     ┌─> Telegram (alerts, messages, check-ins, questions after an alert)
+Atech back-seat board ──┼──────────────────────> Jetson Orin Nano ─HTTPS─┼─> Gemini API (agent, translator, incident report, ask the car)
 UNO Q + camera, Thermo ─┤  MJPEG, JSON / HTTP    hub.py, voice.py,       ├─> Nemotron 3.5 Super VL on Verda (cabin watch)
 iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.py,     └─> Google Maps, OpenStreetMap
                                                  Ollama: Gemma 4 E2B (offline)
@@ -22,12 +22,12 @@ iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.p
 ## Setup
 
 1. **Secrets** (all ignored by git):
-    - `jetson-hub/secrets.json`: copy `secrets.example.json` and add the bot tokens from BotFather. For "ask Google" and the AI incident report, add `gemini_api_key` (from aistudio.google.com), or put `GEMINI_API_KEY=...` in the repo's `.env`; without it everything else still works.
+    - `jetson-hub/secrets.json`: copy `secrets.example.json` and add the bot tokens from BotFather. For "ask Google", the AI incident report and "ask the car", add `gemini_api_key` (from aistudio.google.com), or put `GEMINI_API_KEY=...` in the repo's `.env`; without it everything else still works.
     - `atech-flasher/secrets.json`: copy `secrets.example.json` and add the Wi-Fi name and password.
     - `unoq-camera/secrets.json`: copy `secrets.example.json` and add the Uno Q's Linux password and its address on the hotspot.
 2. **Wi-Fi**: the board only sees 2.4 GHz. On an iPhone hotspot, turn on _Maximize Compatibility_. The firmware expects the Jetson at `172.20.10.2` (`MQTT_HOST` in `atech-flasher/project.yaml`).
 3. **Phone location**: install OwnTracks and set Mode MQTT, Host `172.20.10.2`, Port `1883`, TLS off, Authentication off, location access _Always_, monitoring _Move_. Turn on remote commands (`cmd`) too: when the hub's last location is over 1 minute old, it asks the phone for a new one.
-4. **Telegram**: each contact opens their bot and taps **Start**. The bot replies "✅ SafeDrive connected".
+4. **Telegram**: each contact opens their bot and taps **Start**. The bot replies "✅ SafeDrive connected". For 15 minutes after an alert, they can also type questions to it ([Ask the car](FEATURES.md#ask-the-car-after-an-alert)).
 5. **Live location through Telegram** (works better than OwnTracks on an iPhone): on the driver's phone, open one of the safeDrive bots, tap **Start**, then 📎 → Location → **Share My Live Location** → **Until I turn it off**. The hub takes locations only from chats linked to a bot in `jetson-hub/secrets.json`. Telegram only sends a new position when the phone moves, so while sharing is on, the last position counts for up to 6 hours (`LIVE_SHARE_MAX_AGE`). If sharing stops, it counts for 30 minutes like an OwnTracks fix.
 6. **safeDrive page**: on the driver's phone, open `http://172.20.10.2:8092/` in Safari and add it to the home screen. Set **Settings → Display & Brightness → Auto-Lock → Never**: the page can't keep the screen on by itself, because the Wake Lock API only works on HTTPS pages, and a silent-video workaround doesn't work on current iOS.
 
@@ -103,7 +103,7 @@ Optional keys in `jetson-hub/secrets.json`:
 
 | Key | What it changes | Default |
 |---|---|---|
-| `gemini_api_key` | Gemini, for "ask Google", the translator and the incident report (or `GEMINI_API_KEY` in `.env`) | none: those features are off |
+| `gemini_api_key` | Gemini, for "ask Google", the translator, the incident report and "ask the car" (or `GEMINI_API_KEY` in `.env`) | none: those features are off |
 | `verda_inference_key` | Nemotron cabin watch on Verda (or `VERDA_INFERENCE_KEY` in `.env`) | none: cabin watch is off |
 | `llm_model` | Local LLM on Ollama | `gemma4:e2b` |
 | `whisper_model` | Driver's speech-to-text | `small.en` |

@@ -79,7 +79,18 @@ Make the sign towards the camera and hold it still for 4-6 seconds: the car spea
 - The message says it is AI-generated and can be wrong, and tells the driver's contacts to check the clip. It describes only visible movement in the cabin and never diagnoses injuries; if the video is dark, blurry or missing, it says so instead of guessing.
 - To keep it quick, three lookups run in parallel. As soon as the alert fires, OpenStreetMap (Nominatim) gives the exact street address at the phone's position (about 0.5 s) and Gemini with Google Maps finds the nearest emergency department. The third, a Gemini call with no tools that answers in JSON, describes the clip as soon as it's ready. Thinking is turned off for both Gemini calls. Gemini's own address is used only if OpenStreetMap has none: it names a nearby place, and often a different one each time.
 - The hub log shows which Google Maps calls Gemini made and the places Maps returned (`Maps sources: ...`).
-- Only when an SOS, accident, threat or eyes-closed alert fires do the clip, the alert trigger, the cabin monitor's verdicts from that window and the car's location go to Gemini (and the coordinates to Google Maps and OpenStreetMap).
+- Only when an SOS, accident, threat or eyes-closed alert fires do the clip, the alert trigger, the cabin monitor's verdicts from that window and the car's location go to Gemini (and the coordinates to Google Maps and OpenStreetMap). For 15 minutes after that alert, the newest camera frames, the cabin readings and the location also go to Gemini each time a contact asks the car a question ([Ask the car](#ask-the-car-after-an-alert)); at any other time the bots answer no questions.
+
+### Ask the car (after an alert)
+
+- After an alert, the contacts can do more than watch. For 15 minutes after the last SOS, accident, threat or eyes-closed alert (`ASK_WINDOW` in `jetson-hub/hub.py`, as long as the live location), any linked chat can type a question to its bot: "Is he moving?", "Is anyone else in the car?", "Where is he now?", "Is it hot in there?". The car answers with Gemini.
+- Gemini gets 4 camera frames from the last 4 s (`/frames` in `vision.py`), Nemotron's cabin verdicts from the last minute, the UNO Q's people count, the cabin temperature, the street address (OpenStreetMap) with a Google Maps link, what the alert was and when it fired, the incident report already sent, and the chat's last 4 questions and answers, so follow-ups work (`ask_context`, `answer_question`).
+- It answers in the language of the question, in 2-4 short, calm sentences. It describes only what is visible or measured, never guesses at injuries or intentions, and says when it can't see (camera dark or off, nobody visible). When it looks serious, it reminds them to call `112` (`EMERGENCY_NUMBER`) and gives the location. After a threat alert it never suggests calling the driver.
+- Telegram shows "typing..." while Gemini works, with thinking off. Answers took 3.4-6.8 s in our tests. One question at a time per chat: a second one while the first is being answered gets "Still answering your last question". The hub log shows each question, answer and time taken (`ask (mom ...)`).
+- Nothing happens in the car: no sound, no screen, no message to the boards. The threat alert stays silent.
+- Commands keep working as before (`/start`, `/where`, live locations). Only plain text that isn't a command becomes a question.
+- **Privacy**: outside that window the bots answer no questions ("The car answers questions only for 15 min after an alert"), so nobody can use them to watch the driver on an ordinary drive. Frames go to Gemini only when a contact asks, inside the window. The window survives a hub restart (it's saved with the linked chats).
+- To try it: warn the contacts, hold the SOS button for 2 s, then type a question in a linked Telegram chat.
 
 ## Driver
 

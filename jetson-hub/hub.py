@@ -11,6 +11,8 @@
 #   alert + photo, clip and incident report to everyone. Nothing shows or sounds in the car.
 # - the driver's eyes stay closed or covered for 10 s despite the car's spoken warnings
 #   (car/vision/unresponsive) -> eyes-closed alert + photo, clip and incident report to everyone.
+# - "ask the car": for ASK_WINDOW s after an alert, a contact types a question to the bot ("Is he
+#   moving?") and Gemini answers from the newest camera frames and the car's sensors. Silent in the car.
 import base64, collections, json, math, os, pathlib, re, socket, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from concurrent.futures import ThreadPoolExecutor
 import paho.mqtt.client as mqtt
@@ -324,6 +326,10 @@ def send_report(label, targets, clip, detail, start, end, event_at, vlist, t0, l
         with ThreadPoolExecutor(max_workers=len(targets)) as pool: list(pool.map(one, targets))
         if len(errors) == len(targets): raise RuntimeError("; ".join(errors))
         log(f"{label} report sent ({len(report)} chars) after {time.time() - t0:.1f}s")
+        with lock:   # "ask the car" passes it to Gemini with every question
+            a = state.get("last_alert") or {}
+            if a.get("label") == label and t0 - 5 <= a.get("at", 0) <= time.time():
+                a["report"] = report; save_state()
     except Exception as e:
         log(f"{label} report unavailable:", e)
 
@@ -438,6 +444,10 @@ def send_alert(label, head, tail, reply_topic, media=None, detail=None, event_at
             list(pool.map(send_one, targets))
         log(f"{label} sent to {len(targets) - len(errors)}/{len(targets)} chats in {time.time() - t0:.1f}s", errors or "")
         if len(errors) == len(targets): raise RuntimeError("; ".join(errors))
+        with lock:   # opens the "ask the car" window (ASK_WINDOW); saved, so a hub restart keeps it
+            state["last_alert"] = {"label": label, "detail": detail, "text": text, "at": time.time(),
+                                   "event_at": event_at or time.time(), "report": None}
+            save_state()
         if media: threading.Thread(target=send_media, args=(label, targets, *media, detail, event_at), daemon=True).start()
         if not f and asked and (f := wait_for_fix(SOS_FIX_WAIT)):
             def follow_up(target):
@@ -750,6 +760,113 @@ def on_message(c, userdata, m):
     elif m.topic == "car/voice/send" and isinstance(data, dict):
         threading.Thread(target=send_voice_message, args=(data,), daemon=True).start()
 
+# ---------- "ask the car": the contacts' questions after an alert (Gemini) ----------
+# After an alert the contacts get a photo, a clip and a live location, then can only watch, and for a
+# threat they are told not to call. So for ASK_WINDOW s after the last alert, plain text in a linked
+# chat is a question ("Is he moving?", "Is anyone else in the car?"). Gemini answers from the newest
+# camera frames, Nemotron's recent verdicts, the on-device people count, the cabin climate, the location,
+# the alert and its incident report, and the chat's last few questions and answers.
+# Privacy: outside that window the car answers nothing, so nobody can use the bots to watch the driver
+# on an ordinary drive. Nothing happens in the car either (no MQTT, sound or screen): the threat alert
+# must stay silent.
+ASK_WINDOW = LIVE_PERIOD      # seconds after the last alert: as long as its live location
+ASK_HISTORY = 4               # earlier questions and answers per chat, so follow-ups work
+ASK_FRAMES = "n=4&span=4"     # 4 frames over the last 4 s from vision.py: one shows no movement
+asks = {}                     # chat id -> [(question, answer)] for the current alert
+asking = set()                # chats with a question in flight: one at a time per chat
+
+ASK_SYSTEM = f"""You are safeDrive, a car safety system. An emergency alert went out from the car to the driver's family or friends, and one of them asks you a question in a chat. You answer from the newest frames of a camera INSIDE the car (it sees the people in the car, not the road) and the car's sensors, given below.
+- Answer in the language of the question. 2-4 short sentences, plain text, no markdown. Calm and factual: they are scared and read this on a phone.
+- Describe only what is visible in the frames or measured by the sensors, and say how old it is if it's more than a minute. Never diagnose injuries, medical state or intentions, and never guess: "the driver hasn't moved in the last 4 s" is OK, "the driver is unconscious" or "he is fine" is not.
+- If the frames are dark, black, covered or missing, or the person they ask about isn't visible, say you can't see it. Don't make up what you can't see. Questions that have nothing to do with the alert: say briefly that you only answer about the car and the people in it.
+- An attacker in the back seat may be hidden from the camera: never say the driver is alone or safe just because only the driver is visible.
+- When it looks serious (someone harming or restraining the driver, the driver not moving or not visible, an accident, no picture at all), end by reminding them to call {EMERGENCY_NUMBER} and give the location (the address or the Google Maps link below, copied exactly).
+- After a threat alert, never suggest calling or messaging the driver: a ringing phone could put them at risk."""
+
+def ask_window_open():
+    with lock: a = dict(state.get("last_alert") or {})
+    return a if a and time.time() - a.get("at", 0) <= ASK_WINDOW else None
+
+def ask_context(alert):
+    # Frames (vision.py) and the street address (OpenStreetMap, ~0.5 s) at the same time.
+    now, loc = time.time(), alert_fix()
+    def frames():
+        with urllib.request.urlopen(f"{VISION_URL}/frames?{ASK_FRAMES}", timeout=5) as r: return json.load(r)["frames"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fr, ad = pool.submit(frames), pool.submit(street_address, loc) if loc else None
+        try: frs = fr.result()
+        except Exception as e: log("ask: no camera frames:", e); frs = []
+        try: addr = ad.result() if ad else None
+        except Exception as e: log("ask: no address:", e); addr = None
+    parts = []
+    for f in frs:
+        parts += [{"text": f"Camera frame, {now - f['captured_at']:.1f} s ago:"},
+                  {"inline_data": {"mime_type": "image/jpeg", "data": f["jpeg_b64"]}}]
+    with lock:
+        while verdicts and now - verdicts[0]["captured_at"] > VERDICT_WINDOW: verdicts.popleft()
+        vlist = list(verdicts)[-12:]
+    vlines = "\n".join(f"  {v['captured_at'] - now:+.0f}s: level={v.get('level')} people={v.get('people')} neck={v.get('neck')} "
+                        f"eyes={v.get('eyes')} phone={v.get('phone')} what={v.get('what')!r}" for v in vlist) or "  none in the last minute"
+    o = occupancy
+    people = (f"{o['people']} (on-device person detection)" if o.get("people") is not None and now - o.get("at", 0) < 15 else "unknown")
+    if loc:
+        place = (addr or "no street address") + f", https://maps.google.com/?q={loc['lat']:.6f},{loc['lon']:.6f}"
+        place += f" (phone fix {age_text(fix_age(loc))} old{', the car may have moved' if loc.get('stale') else ''})"
+    else: place = "unknown (no location from the driver's phone)"
+    t = lambda x: time.strftime("%H:%M:%S", time.localtime(x))
+    text = (f"Now: {t(now)}\nAlert: {alert['label']} at {t(alert['event_at'])} ({age_text(now - alert['event_at'])} ago). "
+            f"Message sent to the family:\n{alert['text']}\n"
+            f"Incident report sent after it: {alert.get('report') or 'none yet'}\n"
+            f"Camera: {f'{len(frs)} frames above, oldest first' if frs else 'NO FRAMES: the camera is off or unavailable'}\n"
+            f"Cabin monitor verdicts (NVIDIA Nemotron, seconds before now):\n{vlines}\n"
+            f"People in the car: {people}\nCabin climate: {climate_text() or 'unknown'}\nLocation: {place}")
+    return parts + [{"text": text}], len(frs)
+
+def answer_question(cid, question, alert):
+    # Builds the context and asks Gemini. Returns (answer, number of frames). No Telegram here, so it
+    # can be tested on its own.
+    parts, n = ask_context(alert)
+    with lock: history = list(asks.get(cid, {}).get("history", [])) if asks.get(cid, {}).get("alert_at") == alert["at"] else []
+    contents = [c for q, a in history for c in ({"role": "user", "parts": [{"text": q}]}, {"role": "model", "parts": [{"text": a}]})]
+    contents.append({"role": "user", "parts": parts + [{"text": f"Question: {question}"}]})
+    text, _ = gemini({"systemInstruction": {"parts": [{"text": ASK_SYSTEM}]}, "contents": contents,
+                      "generationConfig": {"maxOutputTokens": 400, "temperature": 0.2}}, timeout=30)
+    if not text: raise RuntimeError("empty answer")
+    with lock: asks[cid] = {"alert_at": alert["at"], "history": (history + [(question, text)])[-ASK_HISTORY:]}
+    return text, n
+
+def ask_car(name, token, cid, question):
+    # One question in flight per chat; "typing..." while Gemini works (Telegram drops it after 5 s).
+    alert = ask_window_open()
+    if not alert:
+        tg(token, "sendMessage", chat_id=cid, text=f"The car answers questions only for {ASK_WINDOW // 60} min after an alert. "
+                                                   "Send /where for the car's current location."); return
+    with lock:
+        busy = cid in asking
+        asking.add(cid)
+    if busy:
+        tg(token, "sendMessage", chat_id=cid, text="⏳ Still answering your last question, one moment."); return
+    done, t0 = threading.Event(), time.time()
+    def typing():
+        while not done.is_set():
+            try: tg(token, "sendChatAction", chat_id=cid, action="typing")
+            except Exception: pass
+            done.wait(4)
+    threading.Thread(target=typing, daemon=True).start()
+    try:
+        if not GEMINI_KEY: raise RuntimeError("no GEMINI_API_KEY")
+        answer, n = answer_question(cid, question, alert)
+        done.set()
+        tg(token, "sendMessage", chat_id=cid, text=f"🚗 {answer}\n\n(Gemini, from the car's camera and sensors at "
+                                                   f"{time.strftime('%H:%M:%S', time.localtime(t0))}: can be wrong)"[:4000])
+        log(f"ask ({name} {cid}): {question!r} -> {answer!r} ({n} frames, {time.time() - t0:.1f}s)")
+    except Exception as e:
+        done.set()
+        log(f"ask ({name} {cid}): {question!r} failed after {time.time() - t0:.1f}s:", e)
+        tg(token, "sendMessage", chat_id=cid, text="Sorry, the car can't answer right now. Check the photo, clip and live location above.")
+    finally:
+        with lock: asking.discard(cid)
+
 # ---------- Telegram: link chats, answer /where, take live locations ----------
 def telegram_location(name, token, cid, msg, edited):
     # A location shared in a chat linked to one of our bots. A live location arrives as
@@ -800,6 +917,9 @@ def telegram_loop(bot):
                     with lock: f = dict(fix) if fix else None
                     if f: tg(token, "sendLocation", chat_id=cid, latitude=f["lat"], longitude=f["lon"])
                     else: tg(token, "sendMessage", chat_id=cid, text="No location from the phone yet. " + SHARE_HOWTO)
+                elif (q := (msg.get("text") or "").strip()) and not q.startswith("/") and linked:
+                    # "ask the car": in its own thread, so polling (and /where, locations) goes on meanwhile
+                    threading.Thread(target=ask_car, args=(name, token, cid, q[:500]), daemon=True).start()
                 else:
                     tg(token, "sendMessage", chat_id=cid, text="SafeDrive is watching. Send /where for the car's current location.")
         except Exception as e:

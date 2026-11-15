@@ -20,6 +20,7 @@ safeDrive is an add-on for any car that raises the alarm by itself when the driv
 - **Automatic accident detection**: a crash (> 2.5 g jolt) or rollover (tilted > 75° for 3 s) triggers a 10 s "Are you OK?" countdown on the driver's screen; if the driver does not press the knob to cancel, the full alert, clip, and report go out automatically.
 - **Cabin threat watch and passenger hand signs**: NVIDIA Nemotron 3.5 Super VL watches for weapons, someone hitting, choking or restraining the driver, or someone grabbing the steering wheel, gear lever, or handbrake, triggering a silent alert; warns the driver out loud when their eyes close or get covered (and alerts their contacts after 10 s) or when they use their phone; it also reads seven passenger hand signs (all good, need a break, volume down, volume up, slower, faster, thank you) and speaks them to the driver.
 - **AI incident report for 112**: within 10–15 s of an alert, Gemini combines a plain-text description of the cabin video clip, the exact street address from OpenStreetMap, the nearest emergency department from Google Maps, the cabin temperature and humidity, and the exact sentences to read to `112`.
+- **Ask the car**: for 15 minutes after an alert, a contact can type a question to their Telegram bot ("Is he moving?") and Gemini answers in their language from the newest UNO Q camera frames, Nemotron's verdicts, the UNO Q's people count, the Modulino Thermo reading and the location. Nothing shows or sounds in the car; outside that window the bots answer no questions.
 - **On-device occupancy and cabin climate warnings**: the Arduino UNO Q reads cabin temperature and humidity from the Modulino Thermo and counts people in the cabin offline with YOLOX-nano. When the cabin stays at 35 °C or above (or 0 °C or below) for 30 s and the UNO Q has seen someone in the last minute (or cannot tell because the picture is dark or the detector is down), the car asks the driver to turn on the AC or heating, reminds them every 5 minutes while it lasts (waiting if the car is busy talking), and shows a calm red banner on the phone page.
 - **Offline-first driver voice assistant**: push-to-talk runs Whisper, Gemma 4 E2B, and Piper TTS locally on the Jetson to send Telegram messages, switch the cabin light, set phone navigation buttons, report cabin temperature, or answer questions—calling the online Gemini agent only when the user says "Google".
 - **Back-seat intercom and accent-aware translator**: passengers have their own button, mic, and speaker to ask questions in their own language or talk with the driver through a two-way translator that matches regional language varieties (such as European vs. Brazilian Portuguese).
@@ -67,7 +68,7 @@ Arduino UNO Q (172.20.10.4:8090)
                    ▼  (Wi-Fi hotspot)
 NVIDIA Jetson Orin Nano (172.20.10.2, WendyOS `car-hub`)
  ├─ vision.py: 40 s RAM frame ring buffer & H.264 clip recorder
- ├─ hub.py: Mosquitto MQTT, climate & occupancy watch, Telegram alerts, Gemini + Maps + OSM report
+ ├─ hub.py: Mosquitto MQTT, climate & occupancy watch, Telegram alerts, Gemini + Maps + OSM report, ask the car
  ├─ voice.py: Whisper STT, Gemma 4 E2B (Ollama), Piper TTS, Gemini agent, Nemotron watch
  └─ dash.py: safeDrive phone dashboard (:8092)
      ▲                                        │
@@ -94,6 +95,7 @@ All numbers below were measured on the hardware during Junction 2026 (14 Novembe
 - **Two-way regional translation (Gemini)**: 2.7–3.5 s per turn.
 - **"Ask Google" agent with web search (Gemini)**: ~10 s.
 - **AI incident report after an alert (Gemini + Google Maps + OpenStreetMap in parallel)**: ~10–15 s (OpenStreetMap street address lookup takes ~0.5 s; RAM video buffer holds the last 40 s of frames; H.264 clips are 960 px wide at ~15 KB/s for a still scene).
+- **Answering a contact's question after an alert (Gemini)**: 3.4–6.8 s in our tests (15 November 2026).
 - **Cabin watch (Nemotron 3.5 Super VL on Verda)**: about 1 s per 3-frame burst when the shared endpoint is not busy (longer when other teams load it), paced to at most one request every 2 s (~28 requests/min) when occupied, one every 15 s when empty for 10 s, and paused while the car speaks or when the camera is dark.
 
 ## Next steps

@@ -4,7 +4,7 @@
 
 **Team madpiece** · Junction 2026 · [Arduino Project Hub page](https://projecthub.arduino.cc/projects/f64f85a3-6f5f-4910-8ac1-9c4b1d8b2739/) · [Arduino UNO Q write-up](docs/ARDUINO.md)
 
-A crash, a medical emergency or a threatening passenger can leave a driver unable to reach their phone, and the people who care about them find out too late. safeDrive is an add-on that makes the car raise the alarm by itself. A hidden SOS button, a crash or rollover, or a threat spotted by the cabin camera sends the driver's chosen contacts, within seconds, a live location, a photo, a video clip of the moments before, and an AI incident report with the street address, the nearest emergency department and exactly what to tell `112`.
+A crash, a medical emergency or a threatening passenger can leave a driver unable to reach their phone, and the people who care about them find out too late. safeDrive is an add-on that makes the car raise the alarm by itself. A hidden SOS button, a crash or rollover, or a threat spotted by the cabin camera sends the driver's chosen contacts, within seconds, a live location, a photo, a video clip of the moments before, and an AI incident report with the street address, the nearest emergency department and exactly what to tell `112`. For the next 15 minutes, the contacts can ask the car what's happening now ("Is he moving?") and get an answer from the camera and the car's sensors.
 
 Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant that runs offline sends messages, finds directions and answers questions. A back-seat intercom translates between passengers and the driver, down to their regional accent. If the driver's eyes close or get covered, or they pick up their phone, the car tells them out loud. Passengers can ask for a break or a slower ride with a simple hand sign. An AI model on the Arduino UNO Q itself knows who's in the car, offline, and the car asks for the AC or the heating when the cabin gets too hot or cold.
 
@@ -26,6 +26,7 @@ Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant
 - **Phone down**: when Nemotron sees the driver using a phone, the car asks them to put it down and offers to send the message by voice instead. ([details](docs/FEATURES.md#cabin-watch-nvidia-nemotron-35-super-vl))
 - **Who's in the car, worked out on the Arduino**: an Edge Impulse model on the UNO Q counts the people in the cabin about once a second, offline, and shows the count on the board's own LED matrix and the camera's live view, with a cloud icon (and NVIDIA green instead of Arduino blue) whenever frames are going to Nemotron. In an empty car, the cloud cabin watch slows to one check every 15 s; it never slows down while someone might be inside. ([details](docs/FEATURES.md#camera-arduino-uno-q--arduino-usb-camera))
 - **AI incident report**: Gemini describes the clip, gives the street address, finds the nearest emergency department with Google Maps and writes what to say to `112`. ([details](docs/FEATURES.md#incident-report))
+- **Ask the car**: for 15 minutes after an alert, a contact can type a question to their Telegram bot ("Is he moving?", "Is anyone else in the car?", "Is it hot in there?") and Gemini answers in their language, from the newest camera frames, Nemotron's cabin verdicts, the people count, the cabin temperature and the location. Nothing shows or sounds in the car, so even after a silent threat alert, nobody has to call the driver to find out. At any other time the bots answer no questions. ([details](docs/FEATURES.md#ask-the-car-after-an-alert))
 - **Last known position**: if the phone has gone quiet, alerts still send its last position (up to 24 h old), clearly marked as old.
 
 **Voice assistant for the driver.** Press the voice button and speak; no wake word. ([details](docs/FEATURES.md#voice-assistant-button-on-port-5-mic-on-ports-3-4-speaker-on-ports-10-11))
@@ -67,9 +68,9 @@ We demoed the SOS button, accident detection and the AI incident reports to seve
 
 - **Your voice never leaves the car by default.** Speech-to-text (Whisper), the assistant's understanding and answers (Gemma 4) and its voice (Piper) all run locally on the Jetson, with no cloud service involved: they keep working with no internet connection at all.
 - What someone says goes to Gemini only when they say "Google" (or "Gemini"), or while the driver has the translator on.
-- Camera frames go to Nemotron on Verda for the cabin watch. In an empty parked car, far fewer do: the UNO Q's on-device person detection, which never sends anything out, slows the cloud watch to one check every 15 s. You can see when frames leave the car: a cloud icon lights up on the UNO Q's LED matrix, and the people count turns from Arduino blue to NVIDIA green on the live view and the safeDrive page. A clip and the location go to Gemini only when an SOS, accident, threat or eyes-closed alert fires. Nemotron's verdicts are shown on the UNO Q's live view, never on the driver's phone page, so a silent threat alert stays silent.
+- Camera frames go to Nemotron on Verda for the cabin watch. In an empty parked car, far fewer do: the UNO Q's on-device person detection, which never sends anything out, slows the cloud watch to one check every 15 s. You can see when frames leave the car: a cloud icon lights up on the UNO Q's LED matrix, and the people count turns from Arduino blue to NVIDIA green on the live view and the safeDrive page. A clip and the location go to Gemini only when an SOS, accident, threat or eyes-closed alert fires. For 15 minutes after that alert, the newest camera frames also go to Gemini each time a contact asks the car a question ("ask the car"). At any other time the bots answer no questions, so nobody can use them to watch the driver. Nemotron's verdicts are shown on the UNO Q's live view, never on the driver's phone page, so a silent threat alert stays silent.
 - Camera frames are kept in RAM only, for the last 40 s.
-- The cabin temperature stays in the car. It only goes out inside an incident report, after an SOS, accident, threat or eyes-closed alert.
+- The cabin temperature stays in the car. It only goes out inside an incident report, or an answer to a contact's question, after an SOS, accident, threat or eyes-closed alert.
 
 ## What's used where
 
@@ -116,17 +117,20 @@ What the numbers don't show, from looking at the frames:
 
 ### Best Use of Gemini API
 
-- **The problem**: after a crash or an attack, the people alerted need to know fast what happened, where, and what to do. A pin on a map and a raw video aren't enough when someone has to call `112` within a minute.
-- **How we integrated it**:
+- **The problem, and why it matters**: when a driver is hurt, asleep at the wheel or threatened, the people alerted are far away, scared and blind. They need to know what happened, where, and what to do, fast. After a threat alert they can't even call the driver: a ringing phone could put them at risk. A pin on a map and a raw video aren't enough when someone has to decide within a minute whether to call `112`.
+- **How we integrated it** (all with the Gemini REST API, thinking off so answers come fast):
+    - **Ask the car** (`ask_car`, `answer_question`, `ask_context` in `jetson-hub/hub.py`): for 15 minutes after an alert (`ASK_WINDOW`, as long as the live location), any linked Telegram chat can type a question. Gemini gets 4 camera frames from the last 4 s (`/frames` in `jetson-hub/vision.py`), the last minute of Nemotron cabin verdicts, the on-device people count, the cabin temperature, the street address and a Google Maps link, the alert and the incident report already sent, and the chat's last 4 questions and answers, so follow-ups work. Telegram shows "typing..." while it works; answers took 3.4-6.8 s in our tests. One question at a time per chat, and nothing happens in the car: no sound, no screen, no message to the boards.
     - **Incident report** (`jetson-hub/hub.py`): `describe_clip` sends the alert's video clip to Gemini for a description of what happened in the cabin. `where_and_er` uses Gemini with Google Maps grounding to find the nearest emergency department. `send_report` combines both with the street address into one message, including the sentences to read to `112`. All three lookups run in parallel, so the report lands about 10-15 s after the alert.
     - **Agent** (`ask_google`, `gemini_call`, `run_function` in `jetson-hub/voice.py`): Gemini with Google Search, Google Maps grounding at the car's location, and four car functions (`send_message`, `set_light`, `show_directions`, `cabin_status`).
     - **Translator** (`translate_turn`, `gemini_hear`, `gemini_tts` in `jetson-hub/voice.py`): Gemini hears the recording, names the language and regional variety, and translates it.
-- **What's innovative**:
-    - Video understanding and Maps grounding combined into one report a stressed person can act on, written to describe only what is visible and never to guess at injuries.
+- **What's innovative or technically impressive**:
+    - **The family can talk to the car, not just watch it.** One multimodal call fuses live camera frames, another AI's verdicts (NVIDIA Nemotron), an edge model's people count (the UNO Q), a physical sensor (Modulino Thermo) and the location into a short answer, in the language of the question ("Onko autossa kuuma?" is answered in Finnish). It stays silent in the car, so it works even when calling is dangerous.
+    - Written to be safe for scared people: it describes only what is visible or measured, never guesses at injuries or intentions, says when the camera is dark or nobody is visible, and reminds them of `112` and the location when it looks serious. After a threat, it never suggests calling the driver.
+    - Video understanding and Maps grounding combined into one report a stressed person can act on.
     - One spoken request can chain Search, Maps and actions in the physical car ("find the nearest open pharmacy and text mum I'm stopping there").
     - Audio in, regional-variety translation out, in a single call: no separate speech-to-text, and Portuguese from Portugal is answered as Portugal's, not Brazil's.
-    - Privacy by design: Gemini is called only when someone says "Google", turns on the translator, or an alert fires.
-- **Why Gemini**: it's the one model here that understands video and audio directly and is grounded in live Google Search and Maps data. Without it, the alert would be a location and a clip; with it, it's a plan.
+    - Privacy by design: Gemini is called only when someone says "Google", turns on the translator, or an alert fires. The contacts can ask the car only for 15 minutes after an alert, never on an ordinary drive.
+- **Why Gemini**: it's the one model here that understands video, images and audio directly, answers in any language, and is grounded in live Google Search and Maps data. Without it, the alert would be a location and a clip; with it, it's a plan, and a conversation with the car while help is on the way.
 
 ### Best Use of Gemma
 
@@ -144,7 +148,7 @@ The full write-up for the Arduino team, with the architecture, the demo and what
 
 - The **Arduino UNO Q** with the **Arduino USB Camera** is the car's camera node. It joins the hotspot on its own and runs `unoq-camera/stream.py` as a systemd service (`unoq-camera/safedrive-camera.service`).
 - `stream.py` finds the camera (`find_camera`) and serves its own JPEGs at 800×600, 10 fps (`/stream.mjpg`, `/frame.jpg`, `/preview.mjpg`). It reports `/health`, including when the picture is dark, recovers from stuck auto-exposure (`kick_exposure`), and serves a live view with the on-device person boxes, the Modulino Thermo's reading and the hand-sign guide (`unoq-camera/icons/`).
-- Its frames feed every AI feature that needs vision: Nemotron's cabin watch and hand signs (`watch_loop` in `jetson-hub/voice.py`), the alert photo and clip (`jetson-hub/vision.py`) and Gemini's incident report (`describe_clip` in `jetson-hub/hub.py`).
+- Its frames feed every AI feature that needs vision: Nemotron's cabin watch and hand signs (`watch_loop` in `jetson-hub/voice.py`), the alert photo and clip (`jetson-hub/vision.py`) and Gemini's incident report and answers after an alert (`describe_clip` and `ask_context` in `jetson-hub/hub.py`).
 - A **Modulino Thermo** on the UNO Q's Qwiic connector measures the cabin. Both halves of the board are used: the sketch `unoq-camera/thermo/thermo.ino` runs on the STM32 microcontroller, reads the sensor every 2 s and offers `thermo_read` through the Arduino router (`Arduino_RouterBridge`). On the Linux side, `climate_loop` in `stream.py` calls it over the router's socket and serves `/climate`. `tools/deploy.py unoq-camera` builds and flashes the sketch on the board itself whenever it changes.
 - The cabin temperature drives the too hot / too cold warning and banner (`check_cabin` in `jetson-hub/hub.py`, `cabin_warning` in `voice.py`), goes into every incident report, shows on the safeDrive page and on the UNO Q's own live view, and answers "how warm is it in the car?" (`climate_sentence` in `jetson-hub/voice.py`, and the Gemini function `cabin_climate`).
 - **Edge AI on the UNO Q: on-device person detection.** Arduino's Edge Impulse model runner (the `ei-models-runner` container from Arduino App Lab, started by `tools/deploy.py`) runs the YOLOX-nano detector from Arduino's model list on the UNO Q, on the camera's own frames. `occupancy_loop` in `stream.py` sends it the newest frame about once a second: about 0.5 s per frame, about 180 MB of RAM, fully offline, while the camera keeps streaming. It serves the people count at `/occupancy`, and the UNO Q's live view draws the boxes ("person 0.86").
@@ -197,6 +201,7 @@ Measured on the hardware on 14 November 2026, in the middle of Junction 2026. Th
 | Translating one turn, either direction (Gemini) | Cloud | 2.7-3.5 s |
 | "Ask Google" with a web search (Gemini agent) | Cloud | about 10 s |
 | AI incident report after an alert (Gemini, Maps, OpenStreetMap) | Cloud | about 10-15 s |
+| Answering a contact's question after an alert ("ask the car", Gemini) | Cloud | 3.4-6.8 s in our tests on 15 November |
 | Counting the people in the cabin (Edge Impulse YOLOX-nano) | UNO Q, offline | about 0.5 s per frame |
 | One cabin-watch verdict (Nemotron on Verda) | Cloud | about 1 s when the shared endpoint isn't busy, longer when it is |
 
@@ -205,7 +210,7 @@ Measured on the hardware on 14 November 2026, in the middle of Junction 2026. Th
 - **Custom hardware with Arduino and Atech.dev**: purpose-built, encased boards for the driver's console and the back seat, a discreet SOS button that fits anywhere, and the Jetson and UNO Q hidden in the glove compartment.
 - **Connect to the car**: read the car's own sensors over CAN bus or OBD-II (airbag deployment, speed, seatbelts, doors) for more reliable crash detection, and control the media system, so the radio turns down when the car speaks or when a passenger signs "volume down". Use the car's own speakers and microphones.
 - **Call emergency services**: hand the incident report and location to Europe's eCall system or the local emergency centre, with a confirmation step so false alarms never reach them.
-- **Watch the driver too**: detect drowsiness, distraction or a driver who slumps over, and warn them or alert their contacts.
+- **Watch the driver more closely**: the car already warns about closed or covered eyes and a phone in hand. Next: catch drowsiness before the eyes close (yawning, nodding off), eyes off the road for too long, and use the car's speed so a driver resting in a parked car isn't warned.
 - **Protect who's left in the car**: alert when a child or pet is left in a parked car that's getting hot.
 - **Faster and more accurate AI**: work with Google, NVIDIA, Verda and Wendy to cut latency, run a smaller vision model on the Jetson so the cabin watch also works offline, and tune the models on real cabin footage.
 - **Partner with a carmaker**: offer safeDrive as a factory option or a dealer-fitted accessory, built into the car's screen and app.
@@ -215,7 +220,7 @@ Measured on the hardware on 14 November 2026, in the middle of Junction 2026. Th
 
 - **A person decides to call 112.** Nothing calls emergency services automatically: the alert and incident report give the driver's contacts what they need to make the call, so a false alarm never sends an ambulance.
 - The camera has no infrared: in a dark cabin, Nemotron isn't asked, the driver's screen shows a crossed-out camera icon, and the UNO Q's person detection reports "can't tell" (never "empty").
-- "Ask Google", the translator and the incident report need the internet; with no `gemini_api_key`, the rest still works.
+- "Ask Google", the translator, the incident report and "ask the car" need the internet; with no `gemini_api_key`, the rest still works.
 - The safeDrive page can't keep the iPhone's screen on by itself (Auto-Lock must be set to Never), and it can only open Google Maps or Waze from a tap.
 
 ## Thanks

@@ -55,9 +55,6 @@ OCCUPANCY_URL = os.environ.get("OCCUPANCY_URL", CLIMATE_URL.rsplit("/", 1)[0] + 
 HOT_CAR_C = float(os.environ.get("HOT_CAR_C", "35"))     # at or above: too hot, the driver is asked to turn on the AC
 COLD_CAR_C = float(os.environ.get("COLD_CAR_C", "0"))    # at or below: too cold, the heating
 CABIN_HOLD_S = float(os.environ.get("CABIN_HOLD_S", "30"))   # it must stay that hot or cold this long
-# A Telegram live location that's still being shared stays valid this long without an update
-# (Telegram only sends a new position when the phone moves).
-LIVE_SHARE_MAX_AGE = int(os.environ.get("LIVE_SHARE_MAX_AGE", str(6 * 3600)))
 SHARE_HOWTO = ("To include your location in alerts, share your live location in this chat: "
                "📎 → Location → Share My Live Location → Until I turn it off.")
 STATE_FILE = pathlib.Path(os.environ.get("STATE_DIR", "/data")) / "telegram.json"
@@ -98,11 +95,15 @@ def recipients(names=None):
     return [(b["token"], c) for b in BOTS if names is None or b["name"] in names
             for c in state["chats"].get(b["name"], [])]
 
+def sharing(f):
+    # A Telegram live location that's still being shared. Telegram only sends a new position when
+    # the phone moves, so however old its last update is, the phone is still there.
+    return f.get("live_until", 0) > time.time()
+
 def recent_fix():
     with lock: f = dict(fix) if fix else None
     if not f: return None
-    sharing = f.get("live_until", 0) > time.time()   # Telegram live location still being shared
-    return f if time.time() - f["tst"] <= (LIVE_SHARE_MAX_AGE if sharing else MAX_FIX_AGE) else None
+    return f if sharing(f) or time.time() - f["tst"] <= MAX_FIX_AGE else None
 
 def new_fix(f, source):
     # A new phone position, from OwnTracks or a Telegram live location.
@@ -417,7 +418,7 @@ def send_alert(label, head, tail, reply_topic, media=None, detail=None, event_at
                         "may have moved. The live location below moves as soon as the phone answers.\n")
                 log(f"{label}: no recent fix, using the last known one ({age_text(fix_age(f))} old)")
             else:
-                when = f"Last known position, {age_text(fix_age(f))} ago. " if fix_age(f) > FRESH_FIX_AGE else ""
+                when = f"Last known position, {age_text(fix_age(f))} ago. " if fix_age(f) > FRESH_FIX_AGE and not sharing(f) else ""
             text = head + f"{when}Live location below (updates for {LIVE_PERIOD // 60} min).\n{maps}"
         elif asked:
             text = head + "📍 Getting the location from the phone..."

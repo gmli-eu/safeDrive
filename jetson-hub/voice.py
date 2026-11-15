@@ -645,8 +645,8 @@ def phone_location():
     try: f = json.loads(HUB_STATE.read_text()).get("fix")
     except Exception: return None
     if not f: return None
-    live = f.get("live_until", 0) > time.time()
-    return f if time.time() - f["tst"] <= (6 * 3600 if live else 1800) else None
+    live = f.get("live_until", 0) > time.time()   # Telegram live location still shared: the phone hasn't moved
+    return f if live or time.time() - f["tst"] <= 1800 else None
 
 # ---------- local place names: "campy" -> "Kamppi" ----------
 # Whisper writes a Finnish name the way an English speaker says it ("campy", "hacker nemi"). Match

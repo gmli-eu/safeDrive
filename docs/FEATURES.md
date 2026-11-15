@@ -7,6 +7,7 @@ How each feature behaves, in detail. The overview is in the [README](../README.m
 ### SOS button (port 6)
 
 - Hold 2 s: two amber flashes, and the alert goes out to every linked chat at once, with a live location. A photo from the car's camera follows, then a clip from 10 s before to 5 s after the press (see Camera). If the last location is over 1 minute old, the hub asks the phone for a new one and the live location moves there when it arrives. With no location at all, the live location follows as soon as the phone answers (up to 60 s).
+- While a Telegram live location is being shared, its last position always counts as current, however old: Telegram only sends a new one when the phone moves.
 - If the phone hasn't sent a position for over 30 minutes (live location sharing stopped, OwnTracks asleep), SOS, accident, threat and eyes-closed alerts still send the last known one, up to 24 h old (`LAST_KNOWN_MAX_AGE`), marked "⚠️ Last known position, 45 min ago: the car may have moved". The incident report says the same. The live location moves as soon as the phone answers. Check-ins still only use positions up to 30 minutes old.
 - Otherwise the light stays off, so the button stays discreet. It never turns red, even when the hub reports a problem (no chats linked, every send failed, or no recent GPS fix). The problem only shows up in the board's log.
 - The white light while it's pressed is built into the V2.0 button, and firmware can't turn it off.
@@ -125,7 +126,7 @@ Make the sign towards the camera and hold it still for 4-6 seconds: the car spea
 - Nothing opens by itself: iOS only lets a page open another app from a tap.
 - When the car corrected a place name it misheard, the card shows what it heard ("Heard "campy"" under Kamppi).
 - Next to the title, the page shows the people counted on the UNO Q ("👤 2", NVIDIA green while frames go to Nemotron, Arduino blue while they stay on the UNO Q) and the cabin temperature and humidity (Modulino Thermo), in amber at the limits. While the cabin is too hot or too cold, one calm red line under the title says so ("Too hot inside, 36 °C. Turn on the AC."): see [Too hot or too cold inside](#too-hot-or-too-cold-inside-modulino-thermo-on-the-uno-q).
-- The page also says when the cabin camera can't see. The destination is retained on `car/nav/destination`, so a page opened later still shows it; the button stays for 6 hours.
+- The page also says when the cabin camera can't see, and when driver monitoring is offline because Nemotron isn't answering. The destination is retained on `car/nav/destination`, so a page opened later still shows it; the button stays for 6 hours.
 
 ## Back seat
 

@@ -22,7 +22,7 @@ Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant
 - **SOS button**: hold it for 2 s. Discreet: no sound, only two brief amber flashes when the alert goes out. ([details](docs/FEATURES.md#sos-button-port-6))
 - **Accident detection**: a crash (jolt over 2.5 g) or a rollover (tilted over 75° for 3 s) starts a 10 s "Are you OK?" countdown on the screen. If nobody presses the knob to cancel, the alert goes out. ([details](docs/FEATURES.md#accident-detection-orientation-sensor-on-port-9))
 - **Threat in the cabin**: Nemotron watches the camera and silently alerts the driver's contacts to a weapon, someone hitting, choking or restraining the driver, or someone grabbing the wheel, gear lever or handbrake. ([details](docs/FEATURES.md#cabin-watch-nvidia-nemotron-35-super-vl))
-- **Eyes closed or covered at the wheel**: when Nemotron sees the driver's eyes shut, or covered by hands, an object or a hoodie, for more than a blink, the car tells them out loud, and after 10 s it alerts their contacts: they may have fallen asleep, passed out, or can't see the road. ([details](docs/FEATURES.md#cabin-watch-nvidia-nemotron-35-super-vl))
+- **Eyes closed or covered at the wheel**: when Nemotron sees the driver's eyes shut, or covered by hands, an object or a hoodie, for more than a blink, the car tells them out loud, and after 10 s it alerts their contacts: they may have fallen asleep, passed out, or can't see the road. If Nemotron stops answering, the car says that driver monitoring is offline, so the driver never relies on a watch that isn't running. ([details](docs/FEATURES.md#cabin-watch-nvidia-nemotron-35-super-vl))
 - **Phone down**: when Nemotron sees the driver using a phone, the car asks them to put it down and offers to send the message by voice instead. ([details](docs/FEATURES.md#cabin-watch-nvidia-nemotron-35-super-vl))
 - **Who's in the car, worked out on the Arduino**: an Edge Impulse model on the UNO Q counts the people in the cabin about once a second, offline, and shows the count on the board's own LED matrix and the camera's live view, with a cloud icon (and NVIDIA green instead of Arduino blue) whenever frames are going to Nemotron. In an empty car, the cloud cabin watch slows to one check every 15 s; it never slows down while someone might be inside. ([details](docs/FEATURES.md#camera-arduino-uno-q--arduino-usb-camera))
 - **AI incident report**: Gemini describes the clip, gives the street address, finds the nearest emergency department with Google Maps and writes what to say to `112`. ([details](docs/FEATURES.md#incident-report))
@@ -47,8 +47,8 @@ Inside the car, safeDrive keeps the driver's eyes on the road. A voice assistant
 **Check-in and phone**
 
 - **I'm ok**: pick it on the screen with the knob to send "I've arrived and everything is ok." with the location to one or all contacts. ([details](docs/FEATURES.md#check-in-menu-screen-on-ports-1-2-knob-on-ports-13-14))
-- **safeDrive page** on the phone in the holder: shows the destination button, the cabin temperature (with a calm red banner when it's too hot or too cold) and whether the cabin camera can see. ([details](docs/FEATURES.md#safedrive-page-phone-in-the-holder))
-- **Location** from Telegram live location or OwnTracks; the hub asks the phone for a fresh fix when the last one is over 1 minute old.
+- **safeDrive page** on the phone in the holder: shows the destination button, the cabin temperature (with a calm red banner when it's too hot or too cold) and whether the cabin camera can see and Nemotron is answering. ([details](docs/FEATURES.md#safedrive-page-phone-in-the-holder))
+- **Location** from Telegram live location or OwnTracks; the hub asks the phone for a fresh fix when the last one is over 1 minute old. A Telegram live location stays current for as long as it's shared, even when the phone hasn't moved for hours.
 
 ## Feedback so far
 

@@ -483,18 +483,18 @@ PAGE = """<!doctype html>
   function status(v) {
     var l = LEVEL[v.level] || "none";
     if (l === "danger") return ["danger", "DANGER"];
-    if (v.neck === "around_throat") return ["danger", "THROAT"];
+    if (v.neck === "both_hands" || v.neck === "arm_or_cord") return ["danger", "THROAT"];
     if (v.eyes === "closed") return ["watch", "EYES CLOSED"];
     if (v.eyes === "covered") return ["watch", "EYES COVERED"];
     if (v.phone === "using") return ["watch", "PHONE"];
-    if (v.neck === "hand_on_throat") return ["watch", "THROAT"];
+    if (v.neck === "one_hand") return ["watch", "THROAT"];
     if (l === "watch") return ["watch", "WATCH"];
     return ["none", "OK"];
   }
   var SIGN = {volume_down: "volume down", volume_up: "volume up", slower: "slower", faster: "faster",
               thank_you: "thank you", need_break: "need a break", all_good: "all good"};
   var EYES = {open: "open", closed: "closed", covered: "covered", down: "looking down", not_visible: "not visible"};
-  var NECK = {none: "clear", chin_or_face: "hand at chin or face", hand_on_throat: "hand on throat", around_throat: "hands around throat"};
+  var NECK = {none: "clear", chin_or_face: "hand at chin or face", one_hand: "one hand on throat", both_hands: "both hands on throat", arm_or_cord: "arm or cord across throat"};
   function esc(t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; }); }
   function clock(t) { var d = new Date(t * 1000); return d.toTimeString().slice(0, 8); }
   function pollNemo() {

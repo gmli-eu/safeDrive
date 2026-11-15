@@ -11,3 +11,6 @@ compose.yml
 AGENTS.md
 CLAUDE.md
 GEMINI.md
+
+# Evaluation bursts recorded by tools/eval_watch.py: they show people's faces
+eval/data/

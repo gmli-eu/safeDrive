@@ -80,16 +80,39 @@ Challenge requirements are in [HACKATHON.md](HACKATHON.md). Each section lists t
 - **Model**: NVIDIA Nemotron 3.5 Super VL (`nemotron-3.5-super-vl`), on the Verda-hosted endpoint (`NEMOTRON_URL` in `jetson-hub/voice.py`).
 - **What it does**: the cabin watch. `watch_loop` in `jetson-hub/voice.py` keeps sending a burst of 3 frames from the last 1.5 s, at most one request every 2 s, and none while the car is speaking. Nemotron returns a JSON verdict (`nemotron`, structured output with a JSON schema): danger level, what it sees, how many people, its hands, and any hand sign.
 - **Where you can see it**: the UNO Q's live view shows **What NVIDIA Nemotron sees** next to the camera picture: each verdict as Nemotron wrote it, when it made the car speak, and how fast it came back (`/nemotron` in `jetson-hub/dash.py`, the `nemo` panel in `unoq-camera/stream.py`).
-- **Why it matters**: a danger verdict triggers a silent alert to the driver's contacts with photo, clip and incident report (`car/vision/threat` → `send_threat` in `jetson-hub/hub.py`). A phone in the driver's hand gets a spoken reminder to put it down (`watch_phone`). Closed or covered eyes make the car warn the driver out loud, then alert the contacts after 10 s (`watch_eyes` in `voice.py`, `send_unresponsive` in `hub.py`). Hand signs are spoken to the driver. The Gemini agent can call `cabin_status` to read Nemotron's latest verdict.
+- **Why it matters**: a threat (a danger verdict, or hands, an arm or a cord on the driver's throat) triggers a silent alert to the driver's contacts with photo, clip and incident report (`car/vision/threat` → `send_threat` in `jetson-hub/hub.py`). A phone in the driver's hand gets a spoken reminder to put it down (`watch_phone`). Closed or covered eyes make the car warn the driver out loud, then alert the contacts after 10 s (`watch_eyes` in `voice.py`, `send_unresponsive` in `hub.py`). Hand signs are spoken to the driver. The Gemini agent can call `cabin_status` to read Nemotron's latest verdict.
 - **Improving its output**:
     - A narrow definition of danger (weapon, hitting, restraining, grabbing the controls), so blocked views and normal movement don't trigger alerts.
-    - The neck is checked before the danger level. The schema's fields are generated in order, and with the level first, Nemotron answered "none" to both hands on the driver's throat, then described them as "a thinking pose". An attacker behind the seat only shows their hands, which look like the driver's own, so hands or an arm around the throat count as danger whoever's they seem to be.
+    - **Describe first, then classify.** The schema's fields are generated in order, with thinking off, so every category comes after the description it depends on: `hands` first, then `neck`, `eyes`, `phone`, and the danger `level` last. With `level` first, Nemotron answered "none" to both hands on the driver's throat, then described them as "a thinking pose". With `neck` before `hands`, it described "both hands clasped around the neck" and still answered one hand.
+    - **The car decides in code, not the model.** `car_actions` in `voice.py` turns each verdict into what the car does. Both hands, or an arm or cord, on the throat raise the alert even when Nemotron's own `level` says "none", which it did for 4 of 5 bursts of hands reaching around the neck from behind. An attacker behind the seat only shows their hands, which look like the driver's own, so they count whoever's they seem to be.
     - A sign is spoken once 2 of the last 3 verdicts agree. When the shared endpoint is slow (5 s or more per verdict), one verdict is enough, so nobody has to hold a sign for a minute.
     - Dark or missing frames are never sent (`covered`).
     - Paced to one request every 2 s and paused while the car speaks: when the endpoint answered in 1 s, back-to-back uploads over the phone hotspot broke up the speaker's audio.
     - Temperature 0 and a fixed schema.
     - `eyes` and `phone` fields with their own rules in code, rather than one danger level: closed or covered eyes need all 3 frames (longer than a blink), phone use 2 of the last 3 verdicts (longer than a glance), and "looking down" and "holding" don't count, so the car only speaks when it should.
-    - Every verdict is visible on the live view's **What NVIDIA Nemotron sees** card and in the log (`hands=`, `neck=`, `eyes=`, `phone=`), for checking each one.
+    - **Measured, not guessed**: `tools/eval_watch.py` records labelled scenes in front of the camera (choking, closed and covered eyes, phone use, the hand signs, and look-alikes that must not trigger anything) and scores each prompt version on them, with recall and false alarms per task ([how](docs/SETUP.md#evaluating-the-cabin-watch)). Results below.
+
+#### Evaluation results
+
+27 scenes acted out in front of the UNO Q camera, 5 bursts each (135 bursts, 3 frames each, exactly what the car sends), scored on what the car would do with each verdict. Three prompt versions on the same bursts, 15 November 2026 (`eval/results/20261115-0029-before.json`, `-0030-neck-eyes-phone.json`, `-0027-hands-first-v2.json`):
+
+| | Before (danger level first) | + neck, eyes, phone fields | + hands first, decision in code (running now) |
+|---|---|---|---|
+| Threat alert: caught | 4 of 15 | 0 of 15 | **13 of 15** |
+| Threat alert: false alarms | 0 of 120 | 0 of 120 | **0 of 120** |
+| Eyes closed or covered: caught | 0 of 25 | 25 of 25 | **25 of 25** |
+| Eyes closed or covered: false alarms | 0 of 110 | 3 of 110 | 7 of 110 |
+| Phone use: caught | 0 of 10 | 9 of 10 | **10 of 10** |
+| Phone use: false alarms | 0 of 125 | 4 of 125 | 6 of 125 |
+| Hand signs right | 21 of 35 | 23 of 35 | **25 of 35** |
+| Signs where there was none | 3 of 100 | 1 of 100 | 1 of 100 |
+| Median time per verdict | 1.0 s | 1.1 s | 1.0 s |
+
+What the numbers don't show, from looking at the frames:
+
+- **Threats**: the scenes are the choking sign, both hands reaching around the neck from behind (from the front they look like an attacker's), and a cord pulled across the throat. Adding the neck field alone made it worse (0 of 15): Nemotron picked the neck category before describing the hands. Describing the hands first and deciding in code fixed it. The two misses are one hand at the throat without visible distress, and fingers interlaced just under the chin. A weapon wasn't tested: we had no knife at the venue, and a pen held up is (correctly) called a pen.
+- **Eyes**: 5 of the 7 false alarms are the "need a break" T sign, whose flat hand really is across the signer's eyes. In a real car the signs come from the back seat, not the driver.
+- **Phone**: 5 of the 6 false alarms are a phone held up at face height while looking at the camera. Holding a phone while driving is illegal in Finland and most of the EU anyway, so a reminder there does no harm.
 
 ### Best Use of Gemini API
 
@@ -141,6 +164,7 @@ The full write-up for the Arduino team, with the architecture, the demo and what
     4. **Robustness**: when the endpoint is busy or fails, the watch retries after 15 s instead of stopping.
     5. **Sharing the hotspot**: once the endpoint answered in about 1 s, the watch sent 55-77 requests a minute and the car's speech broke up. It now sends at most one every 2 s (`WATCH_MIN_INTERVAL_S`) and nothing while the car speaks: about 28 a minute.
     6. **More to watch, same request**: the schema gained `neck`, `eyes` and `phone` fields, answered before the danger level, so choking, closed or covered eyes and phone use cost no extra requests. A **What NVIDIA Nemotron sees** card on the live view shows every verdict and its response time.
+    7. **Measured** (`tools/eval_watch.py`): 135 labelled bursts of 27 acted scenes, scored for every prompt version. It showed the new neck field had made threats worse (0 of 15 caught), because Nemotron picked the category before describing the hands. With the hands described first and the alert decided in code, it catches 13 of 15 with no false alarms, at the same 1 s per verdict ([results](#evaluation-results)).
 - **Path to scale**: each car sends at most one small request every 2 s, one every 15 s while the UNO Q's on-device detector sees an empty cabin, and nothing while the camera can't see, so load grows linearly with the number of cars on the road. A fleet would move to Verda's auto-scaling containers, with a smaller model on the car's Jetson as an offline fallback. The same endpoint can serve taxis, school buses and delivery fleets, with all cabin video staying in Europe.
 
 ### Atech Real World Challenge

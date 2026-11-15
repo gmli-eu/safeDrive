@@ -17,7 +17,7 @@ iPhone (location) ──────┘  MQTT / Telegram       vision.py, dash.p
 | `jetson-hub/`    | Jetson (Wendy app `car-hub`)       | Mosquitto broker; `hub.py`: Telegram alerts, location, incident report; `voice.py`: voice assistant, translator, cabin watch; `vision.py`: camera buffer and clips; `dash.py`: the safeDrive page for the driver's phone, and Nemotron's recent verdicts for the UNO Q's live view (`/nemotron`) |
 | `atech-flasher/` | Jetson (Wendy app `atech-flasher`) | Builds the Atech firmware for both boards (`project.yaml`: driver, `passenger.yaml`: back seat), flashes each over USB, then streams their output |
 | `unoq-camera/`   | Arduino UNO Q (systemd service + sketch) | `stream.py`: serves the USB camera and its live view (with the What NVIDIA Nemotron sees card), the cabin climate (`/climate`) and the on-device people count (`/occupancy`) over HTTP on port 8090; `thermo/thermo.ino`: on the microcontroller, reads the Modulino Thermo and drives the LED matrix |
-| `tools/`         | dev machine                        | `deploy.py` checks an app's web page, deploys the app and waits until it's up; `mqtt_peek.py` watches the broker |
+| `tools/`         | dev machine                        | `deploy.py` checks an app's web page, deploys the app and waits until it's up; `mqtt_peek.py` watches the broker; `eval_watch.py` records labelled scenes and scores Nemotron's cabin watch on them |
 
 ## Setup
 
@@ -47,6 +47,25 @@ Before deploying `unoq-camera` or `jetson-hub`, `deploy.py` checks their web pag
 `deploy.py` runs the app's `make_compose.py`, which generates `compose.yml` with the code and secrets embedded. Then it runs `wendy run --detach` and follows the logs until the app is up. The device defaults to `wendyos-hackathon-device-4.local`; set `WENDY_DEVICE` to override it. Each run's `compose.yml` is generated and holds secrets, so it isn't committed.
 
 The first start of `jetson-hub` downloads about 8 GB (Ollama image, Gemma, Whisper and Python packages) into the app's volumes. `voice.py` downloads the LLM itself, into Ollama's store, over IPv4: Ollama's own pull uses IPv6, which the phone hotspot keeps resetting. Later starts don't download anything.
+
+## Evaluating the cabin watch
+
+`tools/eval_watch.py` measures how well Nemotron's cabin watch does what the car needs, on scenes acted out in front of the UNO Q camera. It runs on the dev machine and needs ImageMagick's `convert` (or Pillow) and the Verda key (`VERDA_INFERENCE_KEY` in `.env`, or `verda_inference_key` in `jetson-hub/secrets.json`).
+
+```sh
+python3 tools/eval_watch.py cases                      # the scenes, and what the car should do with each
+python3 tools/eval_watch.py record                     # act out every scene, 5 bursts each (about 10 min)
+python3 tools/eval_watch.py record eyes_hands phone_call --reps 3   # only some scenes
+python3 tools/eval_watch.py run --name neck-eyes-phone # score the prompt in the working tree
+python3 tools/eval_watch.py run --rev cbc586e --name before        # score the prompt from an older commit
+python3 tools/eval_watch.py compare eval/results/*.json            # runs side by side
+python3 tools/eval_watch.py compare A.json B.json --exclude knife    # leave a scene out (also works with run)
+```
+
+- **Scenes** (`CASES` in `eval_watch.py`): normal driving and an empty seat; things that must not raise anything (talking with the hands, chin on a fist, scratching the neck, looking down, blinking, sunglasses, holding a phone without looking at it); the choking sign, hands reaching around the neck from behind it (done by the driver: from the front they look like an attacker's), a scarf or belt across the throat, a knife and a pen held the same way; closed eyes, a slumped head, and eyes covered by hands, an object or a hood; using a phone and a phone call; the seven hand signs. Two scenes need a second person behind the driver (`choke_behind`, `arm_neck`): `record` only takes them when they're named.
+- **Recording**: each burst is 3 frames 0.75 s apart, shrunk to 640 px, exactly what the cabin watch sends. They're saved in `eval/data/<scene>/`, which git ignores because they show people's faces. Delete a burst's folder if the scene went wrong. While it records, the tool pauses the car's own cabin watch (`car/vision/pause`, renewed every 30 s, at most 120 s per message, so the watch comes back by itself), and a staged choking or closed-eyes scene doesn't alert anyone.
+- **Scoring**: every burst is checked on every task, as the car would act on its verdict (`car_actions` in the prompt block, the same function the car runs; older revisions without it are scored by the rules the car had then, in `predicted` in `eval_watch.py`): threat alert (`level` is danger, or both hands, an arm or a cord on the throat), eyes warning (`eyes` closed or covered), phone reminder (`phone` using) and the hand sign. A thumbs up that raised a threat alert counts as a false alarm. The tool prints recall and false alarms per task, the scenes it got wrong with what Nemotron said, and the median time per verdict, and saves everything in `eval/results/` (no images).
+- **Prompt versions**: `run` reads the prompt, schema and request from the block between the `watch prompt` markers in `jetson-hub/voice.py`, so it tests exactly what the car runs. `--rev` takes it from any commit, to measure a prompt change.
 
 ## Two boards on the Jetson's USB
 

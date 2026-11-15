@@ -1,0 +1,3967 @@
+{
+ "name": "neck-eyes-phone",
+ "rev": "f1bfbf5",
+ "commit": "f1bfbf5",
+ "dirty": false,
+ "model": "nemotron-3.5-super-vl",
+ "at": "2026-11-15 00:30",
+ "summary": {
+  "bursts": 135,
+  "errors": 0,
+  "threat": {
+   "tp": 0,
+   "fn": 15,
+   "fp": 0,
+   "tn": 120,
+   "recall": 0.0,
+   "false_alarm_rate": 0.0
+  },
+  "eyes": {
+   "tp": 25,
+   "fn": 0,
+   "fp": 3,
+   "tn": 107,
+   "recall": 1.0,
+   "false_alarm_rate": 0.02727272727272727
+  },
+  "phone": {
+   "tp": 9,
+   "fn": 1,
+   "fp": 4,
+   "tn": 121,
+   "recall": 0.9,
+   "false_alarm_rate": 0.032
+  },
+  "sign": {
+   "correct": 23,
+   "of": 35,
+   "false_signs": 1,
+   "of_others": 100,
+   "confusion": {
+    "all_good": {
+     "all_good": 5
+    },
+    "faster": {
+     "faster": 5
+    },
+    "need_break": {
+     "volume_down": 2,
+     "need_break": 2,
+     "none": 1
+    },
+    "slower": {
+     "slower": 5
+    },
+    "thank_you": {
+     "thank_you": 2,
+     "slower": 1,
+     "none": 2
+    },
+    "volume_down": {
+     "volume_down": 4,
+     "none": 1
+    },
+    "volume_up": {
+     "none": 4,
+     "thank_you": 1
+    }
+   }
+  },
+  "latency_s": {
+   "median": 1.09,
+   "p90": 1.66
+  },
+  "per_case": {
+   "blinking": {
+    "n": 5,
+    "right": 4
+   },
+   "chin_rest": {
+    "n": 5,
+    "right": 5
+   },
+   "choke_self": {
+    "n": 5,
+    "right": 0
+   },
+   "empty": {
+    "n": 5,
+    "right": 5
+   },
+   "eyes_closed": {
+    "n": 5,
+    "right": 5
+   },
+   "eyes_hands": {
+    "n": 5,
+    "right": 4
+   },
+   "eyes_hood": {
+    "n": 5,
+    "right": 5
+   },
+   "eyes_object": {
+    "n": 5,
+    "right": 5
+   },
+   "eyes_slumped": {
+    "n": 5,
+    "right": 5
+   },
+   "holding_object": {
+    "n": 5,
+    "right": 5
+   },
+   "ligature": {
+    "n": 5,
+    "right": 0
+   },
+   "looking_down": {
+    "n": 5,
+    "right": 5
+   },
+   "neck_from_behind": {
+    "n": 5,
+    "right": 0
+   },
+   "normal": {
+    "n": 5,
+    "right": 5
+   },
+   "phone_call": {
+    "n": 5,
+    "right": 4
+   },
+   "phone_hold": {
+    "n": 5,
+    "right": 1
+   },
+   "phone_scroll": {
+    "n": 5,
+    "right": 5
+   },
+   "scratch_neck": {
+    "n": 5,
+    "right": 5
+   },
+   "sign_all_good": {
+    "n": 5,
+    "right": 5
+   },
+   "sign_faster": {
+    "n": 5,
+    "right": 5
+   },
+   "sign_need_break": {
+    "n": 5,
+    "right": 2
+   },
+   "sign_slower": {
+    "n": 5,
+    "right": 5
+   },
+   "sign_thank_you": {
+    "n": 5,
+    "right": 2
+   },
+   "sign_volume_down": {
+    "n": 5,
+    "right": 4
+   },
+   "sign_volume_up": {
+    "n": 5,
+    "right": 0
+   },
+   "sunglasses": {
+    "n": 5,
+    "right": 5
+   },
+   "talking": {
+    "n": 5,
+    "right": 5
+   }
+  }
+ },
+ "rows": [
+  {
+   "case": "blinking",
+   "burst": "20261115-001035-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.73,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat looking at the camera while a person moves in the background.",
+    "people": 2,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "blinking",
+   "burst": "20261115-001037-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.73,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat looking forward with his hands down.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "blinking",
+   "burst": "20261115-001039-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.7,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with his eyes closed across all three frames.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "blinking",
+   "burst": "20261115-001041-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.91,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his eyes open.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "blinking",
+   "burst": "20261115-001044-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.04,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his eyes open in the first two frames and closed in the last.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "chin_rest",
+   "burst": "20261115-000603-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.05,
+   "error": null,
+   "verdict": {
+    "neck": "chin_or_face",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both fists under his chin, looking forward.",
+    "people": 1,
+    "hands": "Both hands are raised with fists under the chin, palms facing inward, and remain in that position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "chin_rest",
+   "burst": "20261115-000605-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.21,
+   "error": null,
+   "verdict": {
+    "neck": "chin_or_face",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in a car, resting both fists under his chin and looking forward.",
+    "people": 1,
+    "hands": "Both hands are raised with fists curled under the chin, palms facing inward, and they remain in that position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "chin_rest",
+   "burst": "20261115-000607-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.17,
+   "error": null,
+   "verdict": {
+    "neck": "chin_or_face",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both fists under his chin, looking forward.",
+    "people": 1,
+    "hands": "Both hands are raised with fists curled under the chin, palms facing inward, and they remain in that position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "chin_rest",
+   "burst": "20261115-000609-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.18,
+   "error": null,
+   "verdict": {
+    "neck": "chin_or_face",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both fists under his chin, while a person walks in the background holding a box.",
+    "people": 2,
+    "hands": "Both hands are raised with fists under the chin, palms facing inward, and remain in that position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "chin_rest",
+   "burst": "20261115-000611-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.57,
+   "error": null,
+   "verdict": {
+    "neck": "chin_or_face",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both fists under his chin, looking forward.",
+    "people": 1,
+    "hands": "Both hands are raised with fists curled under the chin, palms facing inward, and they remain in that position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "choke_self",
+   "burst": "20261115-000641-0",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.59,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his hand on his neck.",
+    "people": 1,
+    "hands": "One hand is raised to the neck, fingers curled, and remains in the same position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "choke_self",
+   "burst": "20261115-000643-1",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.51,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, holding his own neck with one hand while looking at the camera.",
+    "people": 1,
+    "hands": "One hand is raised to the neck, fingers curled around the throat, and remains in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "choke_self",
+   "burst": "20261115-000645-2",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 2.09,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in a car, head tilted back, mouth open, and both hands around his own neck in a thinking or choking gesture.",
+    "people": 1,
+    "hands": "Both hands are raised to the neck, fingers curled around the throat, and they remain in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "choke_self",
+   "burst": "20261115-000647-3",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 2.08,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A bearded man with glasses sits in the driver's seat, touching his own neck with one hand.",
+    "people": 1,
+    "hands": "One hand is raised to the neck, fingers curled, touching the side of the throat, and remains there across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "choke_self",
+   "burst": "20261115-000649-4",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.96,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, holding his own throat with both hands while looking at the camera.",
+    "people": 1,
+    "hands": "Both hands are raised to the neck, fingers curled around the throat, and they remain in that position from the first to the last frame.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "empty",
+   "burst": "20261115-000525-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.01,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "not_visible",
+    "phone": "none",
+    "level": "none",
+    "what": "An empty indoor basketball court under blue lighting, with a hoop and backboard visible at the far end.",
+    "people": 0,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "empty",
+   "burst": "20261115-000527-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.95,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "not_visible",
+    "phone": "none",
+    "level": "none",
+    "what": "The camera is pointed at an empty indoor basketball court with blue lighting; no driver or people are visible.",
+    "people": 0,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "empty",
+   "burst": "20261115-000529-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.96,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "not_visible",
+    "phone": "none",
+    "level": "none",
+    "what": "An empty indoor basketball court under blue lighting, with a hoop and backboard visible at the far end.",
+    "people": 0,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "empty",
+   "burst": "20261115-000532-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.15,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "not_visible",
+    "phone": "none",
+    "level": "none",
+    "what": "The camera shows an empty indoor basketball court with blue lighting and a hoop; no driver or people are visible.",
+    "people": 0,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "empty",
+   "burst": "20261115-000534-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.24,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "not_visible",
+    "phone": "none",
+    "level": "none",
+    "what": "An empty indoor basketball court under blue lighting, with a hoop and backboard visible at the far end.",
+    "people": 0,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_closed",
+   "burst": "20261115-000834-0",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.22,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with closed eyes sits in the driver's seat while two other people stand behind him in a room with colored lighting.",
+    "people": 3,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_closed",
+   "burst": "20261115-000836-1",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.95,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A man sits in the driver's seat with his eyes closed while other people stand in the background.",
+    "people": 4,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_closed",
+   "burst": "20261115-000838-2",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.0,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with a beard sits in the driver's seat with his eyes closed while two other people stand in the background.",
+    "people": 3,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_closed",
+   "burst": "20261115-000840-3",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.98,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with his eyes closed sits in the driver's seat while people stand behind him in the background.",
+    "people": 4,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_closed",
+   "burst": "20261115-000842-4",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.09,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with closed eyes sits in the driver's seat while several people stand in the background.",
+    "people": 4,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hands",
+   "burst": "20261115-000910-0",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.46,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver sits in the front seat with both hands covering their eyes, while another person is visible in the background.",
+    "people": 2,
+    "hands": "Both hands are raised and flat, pressed together over the driver's eyes with palms facing inward, and they remain in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hands",
+   "burst": "20261115-000912-1",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.2,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver sits in the front seat with both hands covering their eyes, while another person is visible in the background.",
+    "people": 2,
+    "hands": "Both hands are raised and flat, pressed over the driver's eyes with palms facing inward, and they remain in that position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hands",
+   "burst": "20261115-000914-2",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "took_s": 1.01,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver sits in the front seat with both hands covering their eyes, while two other people are visible in the background.",
+    "people": 3,
+    "hands": "Both hands are raised and flat, pressed palm-to-palm vertically over the driver's eyes and nose, fingers pointing upward, and they remain in that position across all frames.",
+    "instruction": "thank_you"
+   }
+  },
+  {
+   "case": "eyes_hands",
+   "burst": "20261115-000916-3",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.22,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver sits in the front seat with both hands covering their eyes, while two other people stand in the background.",
+    "people": 3,
+    "hands": "Both hands are raised and flat, pressed together over the driver's eyes with palms facing inward, and they remain in that position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hands",
+   "burst": "20261115-000918-4",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.53,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver sits in the front seat with both hands covering their face, while two other people stand in the background.",
+    "people": 3,
+    "hands": "Both hands are raised and pressed flat over the driver's eyes and face, palms facing inward, and they remain in that position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hood",
+   "burst": "20261115-000957-0",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.32,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person wearing a black hood sits in the driver's seat with the hood pulled down over their eyes, facing forward.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hood",
+   "burst": "20261115-000959-1",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.07,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person wearing a black hood sits in the driver's seat with the hood pulled down over their eyes, facing forward.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hood",
+   "burst": "20261115-001001-2",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.84,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A single person wearing a black hooded garment sits in the driver's seat with the hood pulled down over their eyes; no other person or hand is visible.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hood",
+   "burst": "20261115-001003-3",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.81,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person in a black hood sits in the driver's seat with the hood pulled over their eyes, while another person moves in the background.",
+    "people": 2,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_hood",
+   "burst": "20261115-001006-4",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.03,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person in a black hood sits in the driver's seat with the hood pulled over their eyes, while two other people stand in the background.",
+    "people": 3,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_object",
+   "burst": "20261115-000935-0",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.34,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person in a black hood sits with both hands raised to the sides of their face, covering their eyes with the hood and fingers.",
+    "people": 1,
+    "hands": "Both hands are raised with fingers spread, palms facing inward toward the face, holding the hood down over the eyes and remaining in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_object",
+   "burst": "20261115-000937-1",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.39,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person in a black hoodie sits in the driver's seat with both hands raised to the sides of their face, covering their eyes with the hood; no phone is visible and no attack is occurring.",
+    "people": 1,
+    "hands": "Both hands are raised to the sides of the face, fingers curled, palms facing inward, holding the hood over the eyes; they remain in the same position across all three frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_object",
+   "burst": "20261115-000939-2",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.69,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person in a black hood sits in the driver's seat with both hands on the sides of the hood, covering their eyes.",
+    "people": 1,
+    "hands": "Both hands are raised to the sides of the head, fingers curled, holding the hood over the eyes; they remain in place from the first to the last frame.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_object",
+   "burst": "20261115-000942-3",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.55,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person wearing a black hood with the hood pulled over their eyes sits in the driver's seat, hands near the collar, with no phone and no attack visible.",
+    "people": 1,
+    "hands": "Both hands are raised near the collar, fingers curled, and remain in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_object",
+   "burst": "20261115-000944-4",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.41,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A person wearing a hood sits in the driver's seat with the hood pulled down over their eyes; no hands are visible and no phone is present.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_slumped",
+   "burst": "20261115-000853-0",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.76,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver with eyes closed sits in the foreground while two other people stand behind him in a room with blue and purple lighting.",
+    "people": 3,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_slumped",
+   "burst": "20261115-000856-1",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.66,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver in the foreground has their eyes closed and head down, while two other people stand in the background near a blue-lit wall.",
+    "people": 3,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_slumped",
+   "burst": "20261115-000858-2",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.57,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver with eyes closed sits in the foreground while two other people stand behind him in a room with blue and purple lighting.",
+    "people": 3,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_slumped",
+   "burst": "20261115-000900-3",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.23,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver with eyes closed sits in the foreground while another person stands behind him and moves their arms.",
+    "people": 2,
+    "hands": "The person in the background raises both hands, one near the head and the other open with palm facing inward, then lowers them as they turn away.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "eyes_slumped",
+   "burst": "20261115-000902-4",
+   "expected": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.16,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "closed",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver sits with eyes closed, head down, in a dimly lit interior with a blue vertical light panel behind them.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "holding_object",
+   "burst": "20261115-000814-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.12,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver holds a box up to his forehead while looking forward, with another person seated behind him.",
+    "people": 2,
+    "hands": "One hand holds a box near the driver's forehead, palm facing inward, and remains in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "holding_object",
+   "burst": "20261115-000816-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.9,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat holds a box in front of his face while another person stands behind him.",
+    "people": 2,
+    "hands": "One hand holds a box up near the driver's face, palm facing inward, and moves it slightly downward across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "holding_object",
+   "burst": "20261115-000818-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.08,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat holds a card or box near his mouth while another person stands behind him.",
+    "people": 2,
+    "hands": "The driver's left hand is raised, holding a rectangular object near the chin and moving it slightly across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "holding_object",
+   "burst": "20261115-000820-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.97,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat holds a small box near his face while another person stands behind him.",
+    "people": 2,
+    "hands": "One hand holds a small box up near the driver's face, moving slightly across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "holding_object",
+   "burst": "20261115-000822-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.38,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver with glasses and a beard sits in the car while a hand holds a blue box near his face; another person is visible in the background.",
+    "people": 2,
+    "hands": "A hand on the left holds a blue rectangular box up near the driver's face, palm facing inward, and remains in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "ligature",
+   "burst": "20261115-002558-0",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.56,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver with glasses and a beard sits in the front seat holding a black strap across his chest with both hands, while a person stands in the background.",
+    "people": 2,
+    "hands": "Both hands are raised and hold a black strap horizontally across the chest, pulling it outward from the first to the last frame.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "ligature",
+   "burst": "20261115-002600-1",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.38,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver with glasses and a beard holds a black strap around his neck with both hands, while another person stands in the background.",
+    "people": 2,
+    "hands": "Both hands are raised, gripping a black strap around the neck, with palms facing inward and fingers curled, and they remain in the same position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "ligature",
+   "burst": "20261115-002602-2",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.31,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver with a beard and glasses holds a black strap around his own neck with both hands, while another person stands in the background looking at a phone.",
+    "people": 2,
+    "hands": "Both hands grip a black strap around the neck, pulling it outward and holding it steady across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "ligature",
+   "burst": "20261115-002604-3",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.17,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat holds a black strap around his neck with both hands, while another person stands in the background.",
+    "people": 2,
+    "hands": "Both hands are raised to the neck, gripping a black strap that loops around the throat, and they remain in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "ligature",
+   "burst": "20261115-002607-4",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.33,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver in the front seat pulls a strap around his own neck with both hands while a person stands in the background looking at a phone.",
+    "people": 2,
+    "hands": "Both hands grip a black strap around the neck, pulling it from the sides toward the front, with palms facing inward and fingers curled around the strap.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "looking_down",
+   "burst": "20261115-001016-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.72,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A single driver is visible, looking down with no hands near the neck or face.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "looking_down",
+   "burst": "20261115-001019-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.78,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A single driver is visible, looking downward with no hands near the neck or face.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "looking_down",
+   "burst": "20261115-001021-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.83,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver wearing glasses looks downward, with no hands near the neck or face and no phone in use.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "looking_down",
+   "burst": "20261115-001023-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.95,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver wearing glasses looks down, with no hands near the neck or face and no phone in use.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "looking_down",
+   "burst": "20261115-001025-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.86,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver wearing glasses looks down, with no hands near the neck or face and no phone in use.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "neck_from_behind",
+   "burst": "20261115-000706-0",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.11,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both hands clasped at his throat, looking forward.",
+    "people": 1,
+    "hands": "Both hands are raised to the neck, fingers interlaced and palms facing inward, remaining in the same position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "neck_from_behind",
+   "burst": "20261115-000708-1",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.96,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both hands clasped around his own neck, looking at the camera.",
+    "people": 1,
+    "hands": "Both hands are raised and clasped around the driver's neck, fingers interlaced, remaining in the same position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "neck_from_behind",
+   "burst": "20261115-000710-2",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.7,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both hands around his own throat, looking upward.",
+    "people": 1,
+    "hands": "Both hands are raised and clasped around the front of the neck, fingers interlaced, remaining in the same position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "neck_from_behind",
+   "burst": "20261115-000712-3",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.07,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both hands clasped around his own neck, looking forward.",
+    "people": 1,
+    "hands": "Both hands are raised and clasped around the front of the neck, fingers interlaced, remaining in the same position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "neck_from_behind",
+   "burst": "20261115-000714-4",
+   "expected": {
+    "threat": true,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.99,
+   "error": null,
+   "verdict": {
+    "neck": "hand_on_throat",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with both hands under his chin, looking forward.",
+    "people": 1,
+    "hands": "Both hands are raised and interlaced under the driver's chin, fingers curled, remaining in the same position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "normal",
+   "burst": "20261115-000504-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.9,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his eyes open; no hands are near his neck or face and no phone is visible.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "normal",
+   "burst": "20261115-000506-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.1,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his eyes open and no hands near his neck or face.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "normal",
+   "burst": "20261115-000508-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.99,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his eyes open and no hands near his neck or face.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "normal",
+   "burst": "20261115-000510-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.12,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his eyes open and no hands near his neck or face.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "normal",
+   "burst": "20261115-000512-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.12,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his hands down.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_call",
+   "burst": "20261115-001135-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.07,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat holding a phone to his ear and talking.",
+    "people": 1,
+    "hands": "The driver's right hand is raised, holding a phone to his ear, with fingers curled around the device and the palm facing inward toward his face; the hand stays in the same position across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_call",
+   "burst": "20261115-001137-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.02,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man with glasses and a beard is holding a phone to his ear and talking while seated in a car.",
+    "people": 1,
+    "hands": "The driver's right hand is raised, holding a phone to his ear, with fingers curled around the device and the palm facing inward toward his face.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_call",
+   "burst": "20261115-001140-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.1,
+   "error": null,
+   "verdict": {
+    "neck": "chin_or_face",
+    "eyes": "open",
+    "phone": "holding",
+    "level": "none",
+    "what": "A man in the driver's seat holds a phone to his ear with his right hand and looks forward.",
+    "people": 1,
+    "hands": "The driver's right hand is raised to the side of his face, holding a phone against his ear, and remains in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_call",
+   "burst": "20261115-001143-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 0.97,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man with glasses and a beard is sitting in the driver's seat, holding a phone to his ear and talking.",
+    "people": 1,
+    "hands": "The driver's right hand is raised, holding a phone to his ear, with fingers curled around the device and the palm facing inward toward his face.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_call",
+   "burst": "20261115-001145-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 0.99,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man with glasses and a beard is talking on a phone while seated in a car, with another person standing behind him.",
+    "people": 2,
+    "hands": "The driver's right hand holds a phone to his ear and remains in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_hold",
+   "burst": "20261115-002624-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.29,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat holding a phone in front of his face, taking a selfie or recording, with a blue light behind him.",
+    "people": 1,
+    "hands": "The driver's left hand holds a phone with a sticker case, fingers wrapped around the side, remaining steady across all frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_hold",
+   "burst": "20261115-002626-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.19,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man in the driver's seat holds a phone in front of his face and looks at it, with no other person visible.",
+    "people": 1,
+    "hands": "The driver's left hand holds a phone up near the face, fingers wrapped around the side, and remains steady across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_hold",
+   "burst": "20261115-002628-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.16,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in a room holding a phone with a sticker that says \"IT AIN'T MUCH BUT IT'S HONEST WORK\" and looking at the camera.",
+    "people": 1,
+    "hands": "The driver's hand holds the phone up in front of his face, moving it slightly between frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_hold",
+   "burst": "20261115-002630-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.99,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "holding",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat holding a phone in front of him, looking at the camera.",
+    "people": 1,
+    "hands": "The driver's right hand holds the phone up in front of his chest, palm facing inward, and remains steady across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_hold",
+   "burst": "20261115-002632-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 0.95,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man in the driver's seat holds a phone up in front of his face while another person's arm is visible behind him.",
+    "people": 2,
+    "hands": "The driver's right hand holds the phone steady in front of him, while a second person's arm is raised behind the driver's head.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_scroll",
+   "burst": "20261115-001118-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 0.9,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A man in the driver's seat holds a phone in front of his face and looks at it.",
+    "people": 1,
+    "hands": "The driver's left hand holds the phone at the bottom edge, and his right hand touches the right side of the phone; both hands remain near the device across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_scroll",
+   "burst": "20261115-001120-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.03,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A person is taking a selfie with a phone, holding it in front of their face.",
+    "people": 1,
+    "hands": "Both hands are raised holding a phone, with fingers gripping the sides and the phone covering the lower part of the face.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_scroll",
+   "burst": "20261115-001122-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.03,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A person is taking a selfie with a phone, holding it in front of their face while looking at the camera.",
+    "people": 1,
+    "hands": "Both hands are raised holding a phone, with fingers gripping the sides and the phone covering the lower part of the face.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_scroll",
+   "burst": "20261115-001125-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.02,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "using",
+    "level": "none",
+    "what": "A driver wearing glasses looks down at a phone held in front of them, with no other person visible.",
+    "people": 1,
+    "hands": "One hand holds the phone in front of the driver's face, remaining steady across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "phone_scroll",
+   "burst": "20261115-001127-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": true,
+    "sign": "none"
+   },
+   "took_s": 1.1,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "using",
+    "level": "none",
+    "what": "A driver wearing glasses holds a phone in front of their face and looks at it across all frames.",
+    "people": 1,
+    "hands": "The driver's left hand holds the phone steady at chin level, with the thumb visible on the side, and remains in the same position from the first to the last frame.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "scratch_neck",
+   "burst": "20261115-000622-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.17,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat looks at the camera while touching his neck; other people are visible in the background.",
+    "people": 4,
+    "hands": "The driver's right hand is raised near his neck and chin, fingers curled, moving slightly across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "scratch_neck",
+   "burst": "20261115-000624-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.14,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat looks down while his hand rests near his neck; other people are visible in the background.",
+    "people": 4,
+    "hands": "The driver's right hand is raised near his neck and chin, fingers curled, and remains in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "scratch_neck",
+   "burst": "20261115-000626-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.04,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat touches his ear while other people stand in the background.",
+    "people": 5,
+    "hands": "The driver's right hand is raised to his ear, fingers curled, and remains near the side of his head across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "scratch_neck",
+   "burst": "20261115-000628-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.94,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat looks at the camera while touching his ear, with other people visible in the background.",
+    "people": 4,
+    "hands": "The driver's right hand is raised near his ear, fingers curled, and remains in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "scratch_neck",
+   "burst": "20261115-000630-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.97,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat touches his face while other people stand in the background.",
+    "people": 4,
+    "hands": "The driver's right hand is raised near his chin and mouth, fingers curled, moving slightly across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sign_all_good",
+   "burst": "20261115-001217-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "took_s": 0.91,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat gives a thumbs-up while another person walks behind him.",
+    "people": 2,
+    "hands": "One hand is raised with the thumb pointing up in a thumbs-up gesture and remains steady across the frames.",
+    "instruction": "all_good"
+   }
+  },
+  {
+   "case": "sign_all_good",
+   "burst": "20261115-001219-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "took_s": 1.09,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat gives a thumbs-up with one hand, then brings the other hand to his mouth, and finally gives two thumbs-up.",
+    "people": 2,
+    "hands": "The driver's right hand gives a thumbs-up, then his left hand moves to his mouth, and finally both hands give thumbs-up.",
+    "instruction": "all_good"
+   }
+  },
+  {
+   "case": "sign_all_good",
+   "burst": "20261115-001221-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "took_s": 1.23,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat gives a thumbs-up with both hands, then one hand, while another person stands in the background.",
+    "people": 2,
+    "hands": "Both hands are raised with thumbs up in the first frame; in the next two frames only the right hand remains raised with the thumb up, palm facing inward, while the left hand lowers out of view.",
+    "instruction": "all_good"
+   }
+  },
+  {
+   "case": "sign_all_good",
+   "burst": "20261115-001224-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "took_s": 0.76,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat gives a thumbs-up while another person stands in the background.",
+    "people": 2,
+    "hands": "One hand is raised with the thumb pointing up in a thumbs-up gesture, held steady across the frames.",
+    "instruction": "all_good"
+   }
+  },
+  {
+   "case": "sign_all_good",
+   "burst": "20261115-001226-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "all_good"
+   },
+   "took_s": 0.7,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat giving a thumbs-up, while two other people stand in the background.",
+    "people": 3,
+    "hands": "The driver's right hand is raised in a thumbs-up gesture, palm facing inward, and remains in that position across the frames.",
+    "instruction": "all_good"
+   }
+  },
+  {
+   "case": "sign_faster",
+   "burst": "20261115-001410-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "took_s": 0.89,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the foreground raising one index finger, while another person stands in the background.",
+    "people": 2,
+    "hands": "One hand is raised with only the index finger pointing up and the other fingers curled, held steady across the frames.",
+    "instruction": "faster"
+   }
+  },
+  {
+   "case": "sign_faster",
+   "burst": "20261115-001412-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "took_s": 0.95,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat holding up one hand with the index finger raised, while another person sits in the background.",
+    "people": 2,
+    "hands": "One hand is raised with the index finger pointing up and the other fingers curled, palm facing inward toward the driver, and it stays in that position across the frames.",
+    "instruction": "faster"
+   }
+  },
+  {
+   "case": "sign_faster",
+   "burst": "20261115-001414-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "took_s": 0.87,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat holds up one hand with the index finger raised while another person sits in the background.",
+    "people": 2,
+    "hands": "One hand is raised with the index finger pointing up and the other fingers curled, palm facing inward toward the driver, and it stays in that position across the frames.",
+    "instruction": "faster"
+   }
+  },
+  {
+   "case": "sign_faster",
+   "burst": "20261115-001416-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "took_s": 0.97,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat holds up one hand with the index finger raised while another person sits in the background.",
+    "people": 2,
+    "hands": "One hand is raised with the index finger pointing up and the other fingers curled, palm facing inward toward the camera, and it stays in that position across the frames.",
+    "instruction": "faster"
+   }
+  },
+  {
+   "case": "sign_faster",
+   "burst": "20261115-001418-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "faster"
+   },
+   "took_s": 0.94,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat holds up one hand with the index finger raised while another person sits in the background.",
+    "people": 2,
+    "hands": "One hand is raised with the index finger pointing up and the other fingers curled, palm facing inward toward the driver, and it stays in that position across the frames.",
+    "instruction": "faster"
+   }
+  },
+  {
+   "case": "sign_need_break",
+   "burst": "20261115-001235-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "need_break"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "took_s": 0.97,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A driver sits in the car with one hand flat over their eyes and the other hand raised near the face, while a person is visible in the background.",
+    "people": 2,
+    "hands": "One hand is flat and horizontal over the eyes, palm down, while the other hand is raised vertically near the chin with fingers spread; both hands remain in similar positions across the frames.",
+    "instruction": "volume_down"
+   }
+  },
+  {
+   "case": "sign_need_break",
+   "burst": "20261115-001237-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "need_break"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "need_break"
+   },
+   "took_s": 0.84,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in a car makes hand signs in front of his face.",
+    "people": 1,
+    "hands": "The driver raises both hands, one flat and one vertical, forming a T shape in front of his face, then lowers the vertical hand while keeping the flat hand across his eyes.",
+    "instruction": "need_break"
+   }
+  },
+  {
+   "case": "sign_need_break",
+   "burst": "20261115-001239-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "need_break"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "need_break"
+   },
+   "took_s": 1.14,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in a car makes hand gestures in front of his face.",
+    "people": 1,
+    "hands": "Both hands are raised near the face, with one hand flat and the other vertical, forming a T shape, and they move slightly across the frames.",
+    "instruction": "need_break"
+   }
+  },
+  {
+   "case": "sign_need_break",
+   "burst": "20261115-001241-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "need_break"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.09,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in a car makes hand gestures in front of his face.",
+    "people": 1,
+    "hands": "The man raises both hands, one flat over his eyes and the other vertical near his mouth, holding the pose across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sign_need_break",
+   "burst": "20261115-001243-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "need_break"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": true,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "took_s": 1.08,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "covered",
+    "phone": "none",
+    "level": "none",
+    "what": "A single person sits in the driver's seat with one hand flat over their eyes and the other hand raised near the chin.",
+    "people": 1,
+    "hands": "One flat hand is held horizontally over the eyes with the palm facing down, while the other hand is raised vertically near the chin with the palm facing inward; both hands remain in the same positions across the frames.",
+    "instruction": "volume_down"
+   }
+  },
+  {
+   "case": "sign_slower",
+   "burst": "20261115-001348-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "took_s": 0.86,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking down with his right hand raised palm forward.",
+    "people": 1,
+    "hands": "The driver's right hand is raised with the palm facing the camera and fingers spread, held steady across the frames.",
+    "instruction": "slower"
+   }
+  },
+  {
+   "case": "sign_slower",
+   "burst": "20261115-001350-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "took_s": 0.98,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with his right hand raised, palm facing the camera, fingers spread.",
+    "people": 1,
+    "hands": "The driver's right hand is raised with all five fingers spread, palm facing the camera, and remains in that position across all frames.",
+    "instruction": "slower"
+   }
+  },
+  {
+   "case": "sign_slower",
+   "burst": "20261115-001352-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "took_s": 0.78,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in a car, raising his right hand with palm facing the camera, then lowering it toward his face.",
+    "people": 1,
+    "hands": "The driver's right hand is raised with all five fingers spread, palm facing the camera, then moves downward and toward the face, becoming blurred as it approaches the mouth area.",
+    "instruction": "slower"
+   }
+  },
+  {
+   "case": "sign_slower",
+   "burst": "20261115-001354-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "took_s": 1.16,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his right hand raised palm toward the camera.",
+    "people": 1,
+    "hands": "The driver's right hand is raised with all five fingers spread, palm facing the camera, and moves slightly downward across the frames.",
+    "instruction": "slower"
+   }
+  },
+  {
+   "case": "sign_slower",
+   "burst": "20261115-001356-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "took_s": 1.2,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with his right hand raised, palm facing the camera, fingers spread, while his eyes look downward.",
+    "people": 1,
+    "hands": "The driver's right hand is raised with all five fingers spread, palm facing the camera, and remains in that position across the frames.",
+    "instruction": "slower"
+   }
+  },
+  {
+   "case": "sign_thank_you",
+   "burst": "20261115-001430-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "took_s": 0.99,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A bearded man with glasses sits in the driver's seat, looking at the camera, while another person stands in the background.",
+    "people": 2,
+    "hands": "The driver's right hand is raised near the face, palm facing inward, moving from near the chin down toward the mouth across the frames.",
+    "instruction": "thank_you"
+   }
+  },
+  {
+   "case": "sign_thank_you",
+   "burst": "20261115-001432-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "slower"
+   },
+   "took_s": 1.92,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A bearded man with glasses sits in the driver's seat, looking upward and moving his hand near his face, while another person stands in the background.",
+    "people": 2,
+    "hands": "The driver's right hand is raised near his face, palm facing inward, moving from near the chin in the first frame to a flat open palm facing the camera in the second, then back toward the mouth in the third.",
+    "instruction": "slower"
+   }
+  },
+  {
+   "case": "sign_thank_you",
+   "burst": "20261115-001434-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.67,
+   "error": null,
+   "verdict": {
+    "neck": "chin_or_face",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A bearded man with glasses sits in the foreground with his hand near his face, while two other people stand in the background.",
+    "people": 3,
+    "hands": "The driver's right hand is raised with fingers spread, palm facing inward, moving from near the mouth down toward the chin across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sign_thank_you",
+   "burst": "20261115-001436-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.6,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A bearded man with glasses sits in the driver's seat, raising his hand near his face, while another person stands in the background.",
+    "people": 2,
+    "hands": "The driver's right hand is raised with fingers spread, palm facing inward, moving from near the mouth in the first frame to touching the chin in the last frame.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sign_thank_you",
+   "burst": "20261115-001438-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "took_s": 1.16,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, touching his face, while another person stands in the background.",
+    "people": 2,
+    "hands": "The driver's right hand is raised near the face, palm facing inward, moving from the mouth area to the chin across the frames.",
+    "instruction": "thank_you"
+   }
+  },
+  {
+   "case": "sign_volume_down",
+   "burst": "20261115-001303-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "took_s": 0.91,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with his hand flat in front of his mouth, eyes open and looking forward.",
+    "people": 1,
+    "hands": "One flat hand is held horizontally in front of the mouth, palm facing down, and remains in that position across the frames.",
+    "instruction": "volume_down"
+   }
+  },
+  {
+   "case": "sign_volume_down",
+   "burst": "20261115-001306-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "took_s": 1.04,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking at the camera with his hand held horizontally in front of his face.",
+    "people": 1,
+    "hands": "One flat hand is held horizontally in front of the face, palm down, fingers pointing right, and remains in that position across all three frames.",
+    "instruction": "volume_down"
+   }
+  },
+  {
+   "case": "sign_volume_down",
+   "burst": "20261115-001308-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "took_s": 1.37,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his right hand held flat in front of his face.",
+    "people": 1,
+    "hands": "The driver's right hand is raised flat, palm facing down, held horizontally in front of his face across all frames.",
+    "instruction": "volume_down"
+   }
+  },
+  {
+   "case": "sign_volume_down",
+   "burst": "20261115-001310-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "took_s": 1.52,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with one hand held flat in front of his face, palm down, while looking forward.",
+    "people": 1,
+    "hands": "One hand is raised flat with the palm facing down, held horizontally in front of the face and mouth across all three frames, moving slightly but staying in the same position.",
+    "instruction": "volume_down"
+   }
+  },
+  {
+   "case": "sign_volume_down",
+   "burst": "20261115-001312-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_down"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.51,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat with his hand near his chin, looking forward.",
+    "people": 1,
+    "hands": "One flat hand is held horizontally near the chin and mouth, palm facing down, and remains in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sign_volume_up",
+   "burst": "20261115-001326-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_up"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.7,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in a car, looking down with his hands near his chest.",
+    "people": 1,
+    "hands": "Both hands are raised near the chest, palms facing each other and slightly upward, moving slightly from the first to the last frame.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sign_volume_up",
+   "burst": "20261115-001328-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_up"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "thank_you"
+   },
+   "took_s": 1.95,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking down with his hand raised near his mouth; another person is visible in the background in the last frame.",
+    "people": 2,
+    "hands": "The driver's right hand is raised flat with fingers together, palm facing inward toward the camera, moving slightly downward from the first to the last frame while staying near the mouth.",
+    "instruction": "thank_you"
+   }
+  },
+  {
+   "case": "sign_volume_up",
+   "burst": "20261115-001330-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_up"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.95,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the foreground with his hand near his mouth, while two other people stand in the background.",
+    "people": 3,
+    "hands": "The driver's right hand is raised near his mouth with the palm facing inward and fingers slightly curled, remaining in that position across the frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sign_volume_up",
+   "burst": "20261115-001332-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_up"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.09,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in a black hoodie and glasses sits in the driver's seat, looking at the camera with his hand near his mouth, while another person stands in the background.",
+    "people": 2,
+    "hands": "The driver's right hand is raised near his mouth with the palm facing inward and fingers slightly curled, moving from a lower position in the first frame to cover the mouth area in the last frame.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sign_volume_up",
+   "burst": "20261115-001334-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "volume_up"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.13,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in the driver's seat touches his face and then lowers his hand while another person stands behind him.",
+    "people": 2,
+    "hands": "The driver's right hand is raised near the mouth in the first two frames, then moves down and outward with the palm facing up in the last frame.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sunglasses",
+   "burst": "20261115-001059-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.14,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "down",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking down with his eyes open.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sunglasses",
+   "burst": "20261115-001102-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.0,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in a car, looking forward and slightly to the side.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sunglasses",
+   "burst": "20261115-001104-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.97,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his eyes open in all frames.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sunglasses",
+   "burst": "20261115-001106-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.96,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward with his eyes open.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "sunglasses",
+   "burst": "20261115-001108-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.98,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward and then slightly down.",
+    "people": 1,
+    "hands": "none",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "talking",
+   "burst": "20261115-000545-0",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.33,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man in a car with both hands raised, then lowering them, appears to be gesturing while speaking.",
+    "people": 1,
+    "hands": "Both hands are raised with palms facing inward and fingers spread, then the right hand moves out of frame while the left hand lowers near the chin.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "talking",
+   "burst": "20261115-000547-1",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.21,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses sits in a car, looking down with both hands raised near his head.",
+    "people": 1,
+    "hands": "Both hands are raised on either side of the driver's head, fingers curled and moving slightly, palms facing inward.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "talking",
+   "burst": "20261115-000549-2",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.17,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat while another person stands behind him to the right and a hand moves near the camera.",
+    "people": 2,
+    "hands": "A hand on the right side of the frame is raised and moving, with fingers spread and palm facing inward, appearing to wave or gesture near the camera.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "talking",
+   "burst": "20261115-000551-3",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 0.95,
+   "error": null,
+   "verdict": {
+    "neck": "none",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward and then down, with his hand raised in the first frame only.",
+    "people": 1,
+    "hands": "One hand is raised near the right side of the frame in the first image, blurred and moving, then it is gone in the next two frames.",
+    "instruction": "none"
+   }
+  },
+  {
+   "case": "talking",
+   "burst": "20261115-000553-4",
+   "expected": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "predicted": {
+    "threat": false,
+    "eyes": false,
+    "phone": false,
+    "sign": "none"
+   },
+   "took_s": 1.01,
+   "error": null,
+   "verdict": {
+    "neck": "chin_or_face",
+    "eyes": "open",
+    "phone": "none",
+    "level": "none",
+    "what": "A man with glasses and a beard sits in the driver's seat, looking forward and then down, with one hand near his mouth.",
+    "people": 1,
+    "hands": "One hand is raised near the mouth with fingers curled, moving slightly from the first to the last frame.",
+    "instruction": "none"
+   }
+  }
+ ]
+}

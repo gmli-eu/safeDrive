@@ -262,7 +262,7 @@ def on_connect(c, userdata, flags, rc, props=None):
     log("MQTT connected", rc)
     c.subscribe([("car/atech/voice/#", 0), ("car/passenger/voice/#", 0), ("car/voice/send/result", 1), ("car/translator", 1),
                  ("car/cabin/climate", 0), ("car/cabin/comfort", 1),
-                 ("car/cabin/occupancy", 0)])
+                 ("car/cabin/occupancy", 0), ("car/vision/pause", 0)])
 
 def on_message(c, userdata, m):
     board = next((b for b, t in BOARD_TOPIC.items() if m.topic.startswith(t + "/")), None)
@@ -292,6 +292,11 @@ def on_message(c, userdata, m):
         if bool(data.get("on")) != translator["on"]: set_translator(bool(data.get("on")))
     elif m.topic == "car/cabin/occupancy" and isinstance(data, dict):
         cabin_people.clear(); cabin_people.update(data)
+    elif m.topic == "car/vision/pause" and isinstance(data, dict):
+        # tools/eval_watch.py record: staged scenes (choking, closed eyes) mustn't alert anyone.
+        # At most WATCH_PAUSE_MAX_S per message: the recorder renews it, and the watch comes back by itself.
+        try: watch_pause["until"] = time.time() + max(0.0, min(float(data.get("for_s") or 0), WATCH_PAUSE_MAX_S))
+        except (TypeError, ValueError): pass
     elif m.topic == "car/cabin/climate" and isinstance(data, dict):
         cabin_climate.clear(); cabin_climate.update(data)
     elif m.topic == "car/cabin/comfort" and isinstance(data, dict):
@@ -1204,46 +1209,52 @@ def translate_turn(s, pcm):
 
 # ---------- Nemotron: watch the cabin for danger near the driver ----------
 # One request in flight at a time: fetch the newest frame from vision.py only when the previous
-# answer is back (the shared endpoint can take a minute per call). A "danger" verdict goes to the
-# hub on car/vision/threat, which alerts the contacts silently like SOS (no sound or screen in the
+# answer is back (the shared endpoint can take a minute per call). A threat (car_actions: a "danger"
+# level, or hands, an arm or a cord on the throat) goes to the hub on car/vision/threat, which alerts the contacts silently like SOS (no sound or screen in the
 # car: an attacker mustn't learn that help was called). Every verdict is also published, retained,
 # on car/vision/nemotron, so the demo can show what Nemotron sees.
 # Who may give hand signs: "any" (anyone the camera sees, the driver too: at a demo table everyone
 # looks like they sit in front) or "back" (only the back seat, for a camera mounted in a real car).
 # With "back", Nemotron ignored nearly every sign at the demo table: it saw the person as the driver.
+# ---- watch prompt: tools/eval_watch.py runs this block as it is (needs only os) ----
 GESTURE_FROM = os.environ.get("GESTURE_FROM", "any")
 SIGN_WHO = ("anyone visible (the driver too)" if GESTURE_FROM == "any" else
             "someone in the BACK seat (ignore the driver and the front passenger)")
 WATCH_PROMPT = f"""You are the safety monitor of a car. The images are frames from a camera inside the car (their order is given below).
+The DRIVER is the person in the driver's seat; if only one person is visible, that person. An attacker sitting behind the driver is hidden by the seat: only their hands, forearm or a cord show, coming from behind the headrest, the shoulders or the side of the seat, and from the front they look like the driver's own hands.
 Answer these questions, in this order.
 
-0. "neck": look at the driver's neck and throat in ALL frames before anything else. An attacker sitting behind the driver is hidden by the seat: only their hands or forearm show, coming from behind the headrest, the shoulders or the side of the seat, and from the front they look like the driver's own hands.
-"around_throat" = BOTH hands on the front or sides of the neck/throat, or an arm or forearm across or around the throat, in any frame. Answer this whoever's hands they seem to be: both hands clutching one's own throat is also the universal sign of choking, an emergency too.
-"hand_on_throat" = ONE hand gripping or pressing the front or side of the neck/throat (not under the chin).
-"chin_or_face" = hands under the chin, at the mouth, on the cheek or face, or touching the collar (a thinking pose, scratching, a thank_you sign).
-"none" = no hand at the neck or face.
+1. "hands": first describe, in one or two short sentences, every visible hand across ALL frames (not only the last frame): one or both hands; where (at the neck or throat, under the chin, at the mouth, over the eyes, at the ear, raised in front of the body); shape (flat, fist, thumb up, single index finger raised, fingers interlaced, two hands in a perpendicular T/cross, two palms pressed vertically together); which way the palm faces (down, up, inward, toward the camera); anything held (phone, knife, pen, cord, belt, scarf, cup) and anything across the throat; and how the hands move from the first frame to the last. "none" only if no hand is visible in any frame.
 
-0b. "eyes": the DRIVER's eyes (the person in the driver's seat; if only one person is visible, that person) across ALL frames.
+2. "neck": based on "hands", what is at the driver's neck and throat (below the chin)?
+"arm_or_cord" = an arm or forearm, or a cord, belt, scarf, cable or strap, across or around the front of the throat.
+"both_hands" = BOTH hands on the front or sides of the neck/throat (gripping, clutching, or fingers interlaced around it), whoever's hands they seem to be: both hands clutching one's own throat is also the universal sign of choking.
+"one_hand" = ONE hand gripping, clutching or pressing the front or side of the neck/throat.
+"chin_or_face" = hands under or on the chin, at the mouth, on the cheek or face, or touching the collar (a thinking pose, scratching, a thank_you sign).
+"none" = nothing at the neck or face.
+
+3. "eyes": the DRIVER's eyes across ALL frames.
 "closed" = the eyelids are clearly shut in EVERY frame (a blink lasts less than one frame, so eyes open in any frame are not closed), including a head nodded or slumped forward or sideways with the eyes shut.
 "covered" = something is over the driver's eyes in EVERY frame, so they can't see the road: a hand or hands (their own or someone else's from behind), an object, a cloth, a hood, hat or hoodie pulled down over the eyes. Not sunglasses or glasses, not a hand only at the mouth or chin.
 "down" = the eyes are open or half open but looking down (at a phone, the lap or a screen below the camera).
 "open" = open and uncovered in at least one frame.
 "not_visible" = no driver, the face is turned away or too small, or sunglasses.
 
-0c. "phone": is the DRIVER (as in "eyes") using a phone, across the frames? A passenger's phone doesn't count.
+4. "phone": is the DRIVER using a phone, across the frames? A passenger's phone doesn't count.
 "using" = the driver holds a phone and looks at it, types or scrolls on it, or holds it to the ear (a call).
 "holding" = a phone in the driver's hand, but they look away from it (e.g. at the road).
 "none" = no phone in the driver's hand: a phone in a holder on the dashboard or windscreen, or lying on a seat, is "none".
 
-1. "level": what is happening to the driver right now? An attacker in the back seat behind the driver may be hidden by the seat or out of frame, so ONLY the driver (1 person) may be visible: judge ALL danger and watch rules by what is happening to the driver, whether or not another person can be seen, and even if the hands or weapon appear to belong to the driver.
-"danger" = clearly happening now (even if only 1 person is visible): "neck" is around_throat; "neck" is hand_on_throat and that arm comes from behind or beside the seat, not from the driver's own shoulder; a weapon (knife, gun, bottle raised to strike); hitting, choking, strangling or physically restraining the driver (hands or an arm around or grasping the driver's neck or throat, or pulling the driver back); grabbing or yanking the steering wheel, gear lever or handbrake. This silently alerts the driver's family, so use it only for these.
-"watch" = risky but not an attack (even if only 1 person is visible): "neck" is hand_on_throat with the driver's own arm; something blocking the driver's view or covering their eyes or face, objects thrown, a scuffle starting, a hand reaching for the wheel.
-"none" = everything else ("neck" chin_or_face or none): talking, eating, phones, normal gestures, hand signs, casually touching the chin or collar with one finger, sleeping, empty seats, a blurry or dark frame.
-"what" = one short factual sentence of what you see (who is where, what they are doing), also when nothing is wrong.
+5. "level": what is happening to the driver right now? ONLY the driver may be visible: judge by what is happening to the driver, whether or not another person can be seen, and even if the hands or weapon appear to belong to the driver.
+"danger" = clearly happening now: "neck" is arm_or_cord or both_hands; "neck" is one_hand and that arm comes from behind or beside the seat, or the driver shows distress (head thrown back, mouth wide open, face strained); a weapon (knife, gun, bottle raised to strike); hitting or physically restraining the driver (pulling them back by the head, hair or shoulders); grabbing or yanking the steering wheel, gear lever or handbrake. This silently alerts the driver's family, so use it only for these.
+"watch" = risky but not an attack: "neck" is one_hand with the driver's own arm and no distress; something blocking the driver's view, objects thrown, a scuffle starting, a hand reaching for the wheel.
+"none" = everything else ("neck" chin_or_face or none): talking, eating, phones, normal gestures, hand signs, sleeping, empty seats, a blurry or dark frame.
 
-2. "hands": one short sentence on what any raised or moving hands do across ALL frames (not only the last frame): one or both hands, shape (flat, fist, thumb up, single index finger raised, two hands in a perpendicular T/cross, or two palms pressed vertically together), which way the palm faces (down, up, inward, toward the camera), whether near the chin/mouth, and how they move from the first frame to the last. "none" only if no hand is raised in any frame.
+6. "what" = one short factual sentence of what you see (who is where, what they are doing), also when nothing is wrong.
 
-3. "instruction": based on "hands", is {SIGN_WHO} deliberately making one of these hand signs across the frames? People may sit close to the camera and their hands may be partly cut off.
+7. "people" = the number of people visible.
+
+8. "instruction": based on "hands", is {SIGN_WHO} deliberately making one of these hand signs across the frames? People may sit close to the camera and their hands may be partly cut off.
 Check in this order:
 a) Are BOTH hands raised together?
    - If one hand is horizontal and the other upright/vertical touching it (sports time-out T), or the two hands/forearms are crossed in an X, answer need_break.
@@ -1257,22 +1268,41 @@ b) Otherwise, if ONE hand makes one of the signs below (even if the motion finis
 - volume_down: ONE flat hand (the other hand down), palm facing straight down, held horizontal or pushing downward (not touching/leaving the chin).
 - volume_up: ONE flat hand (the other hand down), palm facing straight up, held horizontal or lifting upward.
 - need_break: BOTH hands together making a T or a cross (sports time-out), see a) above.
-Use "none" for ordinary movement: waving side-to-side, talking casually with the hands, adjusting hair, glasses or headphones, scratching the nose, a curled fist resting under the chin (thinking pose), or holding a phone or cup.
+Use "none" for ordinary movement: waving side-to-side, talking casually with the hands, adjusting hair, glasses or headphones, scratching the nose, a curled fist resting under the chin (thinking pose), hands at the neck, or holding a phone, cup or other object.
 
-Answer with JSON only: {{"neck": "none"|"chin_or_face"|"hand_on_throat"|"around_throat", "eyes": "open"|"closed"|"covered"|"down"|"not_visible", "phone": "none"|"holding"|"using", "level": "none"|"watch"|"danger", "what": "...", "people": <number of people visible>, "hands": "...", "instruction": "<one id above or none>"}}"""
+Answer with JSON only: {{"hands": "...", "neck": "none"|"chin_or_face"|"one_hand"|"both_hands"|"arm_or_cord", "eyes": "open"|"closed"|"covered"|"down"|"not_visible", "phone": "none"|"holding"|"using", "level": "none"|"watch"|"danger", "what": "...", "people": <number>, "instruction": "<one id above or none>"}}"""
 GESTURES = {"volume_down": "Could you turn the volume down, please?", "volume_up": "Could you turn the volume up, please?",
             "slower": "Could you slow down, please?", "faster": "Could you go a bit faster?", "thank_you": "Thank you!",
             "need_break": "Can we stop for a break soon?", "all_good": "All good back here."}
-# The fields are generated in order, with no thinking: Nemotron answers "neck" before "level" (with
-# "level" first it called both hands on the throat "none", then described them as a thinking pose),
-# and describes the hands before it picks the sign.
-NECK = ["none", "chin_or_face", "hand_on_throat", "around_throat"]
+# The fields are generated in order, with no thinking, so every category comes after the description
+# it depends on: "hands" first, then "neck", ..., "level". Measured with tools/eval_watch.py: with
+# "neck" before "hands", Nemotron described "both hands clasped around the neck" and still answered
+# one hand, and with "level" first it called both hands on the throat "none".
+NECK = ["none", "chin_or_face", "one_hand", "both_hands", "arm_or_cord"]
+NECK_THREAT = {"both_hands", "arm_or_cord"}   # a threat alert whatever "level" says
 EYES = ["open", "closed", "covered", "down", "not_visible"]
 EYES_SHUT = {"closed", "covered"}   # the driver can't see the road
 PHONE = ["none", "holding", "using"]
-WATCH_SCHEMA = {"type": "object", "properties": {"neck": {"type": "string", "enum": NECK}, "eyes": {"type": "string", "enum": EYES}, "phone": {"type": "string", "enum": PHONE}, "level": {"type": "string", "enum": ["none", "watch", "danger"]},
-                "what": {"type": "string"}, "people": {"type": "integer"}, "hands": {"type": "string"},
-                "instruction": {"type": "string", "enum": ["none", *GESTURES]}}, "required": ["neck", "eyes", "phone", "level", "what", "people", "hands", "instruction"]}
+WATCH_SCHEMA = {"type": "object", "properties": {"hands": {"type": "string"}, "neck": {"type": "string", "enum": NECK},
+                "eyes": {"type": "string", "enum": EYES}, "phone": {"type": "string", "enum": PHONE},
+                "level": {"type": "string", "enum": ["none", "watch", "danger"]}, "what": {"type": "string"}, "people": {"type": "integer"},
+                "instruction": {"type": "string", "enum": ["none", *GESTURES]}},
+                "required": ["hands", "neck", "eyes", "phone", "level", "what", "people", "instruction"]}
+
+def car_actions(v):
+    # What the car does with a verdict, decided in code from the fields rather than left to the model's
+    # "level" (it didn't always follow its own neck rules). watch_loop acts on it; tools/eval_watch.py scores it.
+    return {"threat": v.get("level") == "danger" or v.get("neck") in NECK_THREAT,   # silent alert to the contacts
+            "eyes": v.get("eyes") in EYES_SHUT,                                       # spoken warning, alert after 10 s
+            "phone": v.get("phone") == "using",                                       # spoken reminder
+            "sign": v.get("instruction") if v.get("instruction") in GESTURES else "none"}
+
+def watch_intro(n, span):
+    # Sent after WATCH_PROMPT: how the frames are ordered.
+    return (f"{n} frames from the last {span} s, oldest first, newest last. Judge danger on the newest frame,"
+            " and count a hand sign if it is clearly made across the frames (moving signs like thank_you, volume_down, volume_up"
+            " or faster may start in an earlier frame and move down by the last)." if n > 1 else "One frame.")
+# ---- end of watch prompt ----
 MAX_FRAME_AGE_S = 10
 HUB_LEVEL = {"none": "low", "watch": "medium", "danger": "high"}   # hub.py alerts on "high" only
 
@@ -1305,6 +1335,9 @@ WATCH_MIN_INTERVAL_S = float(os.environ.get("WATCH_MIN_INTERVAL_S", "2"))
 # EMPTY_PAUSE_S does it drop to one check every WATCH_EMPTY_INTERVAL_S (fail-open: a person the small
 # model misses is still seen by Nemotron within that time, and a detector that's down changes nothing).
 EMPTY_PAUSE_S, WATCH_EMPTY_INTERVAL_S = 10, 15
+# car/vision/pause {"for_s": n}: no verdicts for n s (at most WATCH_PAUSE_MAX_S), while tools/eval_watch.py records.
+WATCH_PAUSE_MAX_S = 120
+watch_pause = {"until": 0.0}
 # Eyes closed or covered (hands, an object, a hoodie): the driver may be falling asleep or passing out,
 # or can't see the road. Not silent, unlike a threat: one burst with the eyes shut or covered in all 3
 # frames (~1.5 s, longer than any blink) makes the car say so out loud,
@@ -1406,7 +1439,7 @@ def watch_loop():
     recent_gestures, spoken_gesture = collections.deque(maxlen=3), None
     eyes = {"since": None, "last": 0.0, "warned": 0, "alerted": False}   # the current eyes-closed episode
     phone = {"recent": collections.deque(maxlen=3), "said_at": 0.0}
-    last_ask, was_empty = 0.0, False
+    last_ask, was_empty, was_paused = 0.0, False, False
     while True:
         try:
             while True:   # quiet while the car speaks, paced, and slow while the Uno Q sees an empty cabin
@@ -1416,8 +1449,12 @@ def watch_loop():
                     was_empty = empty
                     log(f"cabin empty (on-device): Nemotron every {WATCH_EMPTY_INTERVAL_S} s" if empty else
                         "someone in the cabin (on-device): Nemotron back to full rate")
+                paused = time.time() < watch_pause["until"]
+                if paused != was_paused:
+                    was_paused = paused
+                    log("cabin watch paused: recording evaluation scenes (car/vision/pause)" if paused else "cabin watch resumed")
                 gap = WATCH_EMPTY_INTERVAL_S if empty else WATCH_MIN_INTERVAL_S
-                if not busy and time.monotonic() - last_ask >= gap: break
+                if not busy and not paused and time.monotonic() - last_ask >= gap: break
                 time.sleep(0.2)
             try: frames, captured = camera_frames()
             except (urllib.error.HTTPError, OSError) as e:
@@ -1427,15 +1464,15 @@ def watch_loop():
             camera_state("ok")
             t = time.time(); last_ask = time.monotonic()
             client.publish("car/vision/sending", json.dumps({"at": round(t, 2)}))   # frames leaving the car: the UNO Q shows it
-            intro = (f"{len(frames)} frames from the last {WATCH_SPAN_S} s, oldest first, newest last. Judge danger on the newest frame,"
-                     " and count a hand sign if it is clearly made across the frames (moving signs like thank_you, volume_down, volume_up"
-                     " or faster may start in an earlier frame and move down by the last)." if len(frames) > 1 else "One frame.")
+            intro = watch_intro(len(frames), WATCH_SPAN_S)
             text = nemotron([{"type": "text", "text": WATCH_PROMPT + "\n\n" + intro},
                              *({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(f).decode()}} for f in frames)],
                             schema=WATCH_SCHEMA)
             m = re.search(r"\{.*\}", text, re.S)
             v = json.loads(m.group(0)) if m else {"level": "none", "what": "", "people": 0}
             level = v.get("level") if v.get("level") in ("none", "watch", "danger") else "none"
+            acts = car_actions(v)
+            if acts["threat"]: level = "danger"   # hands, an arm or a cord on the throat: hub.py alerts on "high"
             took = time.time() - t
             gesture = v.get("instruction") if v.get("instruction") in GESTURES else "none"
             log(f"Nemotron ({took:.0f}s, frame {t - captured:.1f}s old): {level} neck={v.get('neck')} eyes={v.get('eyes')} phone={v.get('phone')} {v.get('what', '')!r} people={v.get('people')} sign={gesture} hands={str(v.get('hands', ''))[:120]!r}")

@@ -36,6 +36,8 @@ PHOTO_MAX_AGE = 3.0                                      # a "photo" older than 
 CLIP_MAX_WAIT = 30.0                                     # longest a clip request waits for its end time
 CLIP_WIDTH = int(os.environ.get("CLIP_WIDTH", "960"))    # clips are scaled down: smaller upload over the hotspot
 
+STALL_S = 0.4                # a gap between frames longer than this is logged (hotspot stall)
+
 def log(*a): print(time.strftime("%H:%M:%S"), "[vision]", *a, flush=True)
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
@@ -70,7 +72,12 @@ def read_stream():
                     k, _, v = line.partition(b":"); h[k.strip().lower()] = v.strip()
                 jpg = r.read(int(h[b"content-length"]))
                 # Our own clock, not the Uno Q's: alert times come from this machine too.
-                add_frame(time.time(), jpg)
+                now = time.time()
+                # At 10 fps a frame is due every 0.1 s: a long gap means the hotspot stalled
+                # (the speaker's audio goes through the same hotspot, so it shows why speech broke up).
+                with lock: last = frames[-1][0] if frames else None
+                if last and cam["connected"] and now - last > STALL_S: log(f"camera stall: no frame for {now - last:.2f} s")
+                add_frame(now, jpg)
                 if not cam["connected"]:
                     cam.update(connected=True, since=time.time()); delay = 1
                     log("camera connected:", CAMERA_URL)

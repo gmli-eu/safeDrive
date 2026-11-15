@@ -1032,19 +1032,33 @@ def stream(s, q):
 
 def stream_pcm(s, q):
     # Sends 16 kHz PCM from the queue (None ends it) to the speaker of the session's board, just ahead of playback.
+    # Logs where a gap came from. "ran dry": the next sentence wasn't synthesised in time (Jetson CPU).
+    # "stalled": this thread overslept (the Jetson itself stalled). "lowest lead": how close the
+    # speaker's buffer came to empty. None of them bad: the gap was on the hotspot (vision's "camera stall").
     topic = BOARD_TOPIC[s["board"]] + "/pcm"
     start, sent = None, 0.0
-    while (pcm := q.get()) is not None:
-        # If the next sentence took longer to make than the board had buffered, the speaker
-        # ran dry: restart the clock from now so the lead is rebuilt instead of overflowing it.
-        start = max(start, time.monotonic() - sent) if start else time.monotonic()
-        for i in range(0, len(pcm), PCM_CHUNK):
-            if not current(s): return                         # a new press interrupts the answer
-            ahead = sent - (time.monotonic() - start)
-            if ahead > PLAY_LEAD_S: time.sleep(ahead - PLAY_LEAD_S)
-            part = pcm[i:i + PCM_CHUNK]
-            client.publish(topic, part)
-            sent += len(part) / 2 / SR
+    dry, stalls, low, filled, t_first = [], [], None, False, time.monotonic()
+    try:
+        while (pcm := q.get()) is not None:
+            # If the next sentence took longer to make than the board had buffered, the speaker
+            # ran dry: restart the clock from now so the lead is rebuilt instead of overflowing it.
+            if start and time.monotonic() - start > sent: dry.append(time.monotonic() - start - sent); filled = False
+            start = max(start, time.monotonic() - sent) if start else time.monotonic()
+            for i in range(0, len(pcm), PCM_CHUNK):
+                if not current(s): return                         # a new press interrupts the answer
+                ahead = sent - (time.monotonic() - start)
+                if filled: low = ahead if low is None else min(low, ahead)
+                if ahead > PLAY_LEAD_S:
+                    filled, want = True, ahead - PLAY_LEAD_S
+                    t = time.monotonic(); time.sleep(want)
+                    if time.monotonic() - t - want > 0.15: stalls.append(time.monotonic() - t - want)
+                part = pcm[i:i + PCM_CHUNK]
+                client.publish(topic, part)
+                sent += len(part) / 2 / SR
+    finally:
+        fmt = lambda xs: f"{len(xs)}x (worst {max(xs):.2f} s)" if xs else "0"
+        log(f"audio: {sent:.1f} s to {s['board']} in {time.monotonic() - t_first:.1f} s, ran dry {fmt(dry)}, "
+            f"stalled {fmt(stalls)}, lowest lead {'-' if low is None else f'{low:.2f} s'}")
 
 # ---------- translator: the back seat's language <-> English for the driver ----------
 # The driver turns it on in the screen menu (car/translator). Then the back seat speaks their own

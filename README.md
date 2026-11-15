@@ -2,7 +2,7 @@
 
 **When you can't call for help, your car does.**
 
-**Team madpiece** · Junction 2026 · [Arduino Project Hub page](https://projecthub.arduino.cc/projects/f64f85a3-6f5f-4910-8ac1-9c4b1d8b2739) · [Arduino UNO Q write-up](docs/ARDUINO.md) · [Presentation (PDF)](docs/safeDrive_presentation.pdf)
+**Team madpiece** · Junction 2026 · [▶ Demo video](https://gmli-eu.github.io/safeDrive/) · [Arduino Project Hub page](https://projecthub.arduino.cc/projects/f64f85a3-6f5f-4910-8ac1-9c4b1d8b2739) · [Arduino UNO Q write-up](docs/ARDUINO.md) · [Presentation (PDF)](docs/safeDrive_presentation.pdf)
 
 A crash, a medical emergency or a threatening passenger can leave a driver unable to reach their phone, and the people who care about them find out too late. safeDrive is an add-on that makes the car raise the alarm by itself. A hidden SOS button, a crash or rollover, or a threat spotted by the cabin camera sends the driver's chosen contacts, within seconds, a live location, a photo, a video clip of the moments before, and an AI incident report with the street address, the nearest emergency department and exactly what to tell `112`. For the next 15 minutes, the contacts can ask the car what's happening now ("Is he moving?") and get an answer from the camera and the car's sensors.
 

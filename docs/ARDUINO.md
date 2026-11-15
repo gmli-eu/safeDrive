@@ -2,7 +2,7 @@
 
 **An in-car safety add-on using Arduino UNO Q, Modulino Thermo and Edge AI to detect occupants, watch cabin climate and send emergency alerts.**
 
-**Team madpiece** · Junction 2026 · Best use of Arduino UNO Q · [Arduino Project Hub page](https://projecthub.arduino.cc/projects/f64f85a3-6f5f-4910-8ac1-9c4b1d8b2739/) · Code: https://github.com/gmli-eu/safeDrive · [Presentation (PDF)](safeDrive_presentation.pdf)
+**Team madpiece** · Junction 2026 · Best use of Arduino UNO Q · [Arduino Project Hub page](https://projecthub.arduino.cc/projects/f64f85a3-6f5f-4910-8ac1-9c4b1d8b2739) · Code: https://github.com/gmli-eu/safeDrive · [Presentation (PDF)](safeDrive_presentation.pdf)
 
 This page is the full write-up for the Arduino team and judges. It covers the Modulino Thermo and the on-device person detection, which we added after the Project Hub page went into review. The [README](../README.md) gives the overview of the whole project.
 
